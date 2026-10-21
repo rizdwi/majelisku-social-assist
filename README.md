@@ -8,6 +8,18 @@ Sistem pendukung tim media sosial Majelisku (majelisku.web.id) untuk mendeteksi 
 2. Relevansi ketat: Rekomendasi Majelisku hanya disertakan jika penanya memang mencari informasi kajian.
 3. Kepatuhan platform: Menggunakan Threads API resmi milik pengguna.
 
+## Pipeline (3 Langkah Mudah)
+
+1. **Ambil** — Tarik postingan pencari kajian dari Threads API (tombol "Tarik dari Threads" / "Thread Orang Lain"), **atau import hasil scrape eksternal** lewat panel Pipeline di dashboard web: tempel JSON berisi daftar postingan, formatnya:
+   ```json
+   [{"author": "namaakun", "text": "kajian sunnah di bandung dimana ya?", "url": "https://www.threads.com/@akun/post/xxx", "created_at": "2026-10-14T08:00:00+00:00"}]
+   ```
+   Field `text` wajib; `post_id` opsional (dibuat otomatis dari URL+teks bila kosong). Endpoint yang sama tersedia sebagai API: `POST /api/import-posts` dengan body `{"posts": [...]}`.
+2. **Saring & Draft (otomatis)** — Setiap selesai ambil/import, classifier menyaring postingan (skor >= ambang = kandidat) dan AI langsung menyusun draft balasan bridging ke Majelisku.web.id. Tidak ada tombol terpisah.
+3. **Review** — Admin memeriksa draft di Antrean Review, menyetujui/melewati, lalu menempel balasan ke postingan asli. Tidak ada auto-posting.
+
+Catatan: berkas `data/leads_seed.json` berisi contoh leads asli hasil scrape; isinya dimuat otomatis satu kali saat basis data masih kosong (mis. cold start serverless).
+
 ## Struktur Berkas
 
 - `config.py`: Konfigurasi kata kunci, bobot skor filter, dan pembacaan berkas .env.

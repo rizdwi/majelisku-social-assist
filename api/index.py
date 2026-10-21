@@ -1,3 +1,5 @@
+import hashlib
+import json
 import os
 import sys
 import uuid
@@ -51,6 +53,35 @@ from credentials_checker import validate_threads_credentials, validate_ai_creden
 
 # Inisialisasi basis data
 init_db()
+
+# --- Seed leads hasil scrape eksternal (dimuat sekali saat DB masih kosong) ---
+def _load_seed_leads() -> None:
+    try:
+        if get_stats().get("total_raw", 0) > 0:
+            return
+        seed_path = ROOT_DIR / "data" / "leads_seed.json"
+        if not seed_path.exists():
+            return
+        raw = json.loads(seed_path.read_text(encoding="utf-8"))
+        cleaned = []
+        for p in raw:
+            if not p.get("text"):
+                continue
+            cleaned.append({
+                "post_id": str(p.get("post_id") or f"seed_{uuid.uuid4().hex[:10]}"),
+                "author": str(p.get("author", "")).lstrip("@"),
+                "text": str(p["text"]),
+                "url": str(p.get("url", "")),
+                "created_at": str(p.get("created_at") or datetime.now(timezone.utc).isoformat()),
+            })
+        if cleaned:
+            save_raw_posts(cleaned)
+            classify_pending_posts()
+            process_candidates()
+    except Exception:
+        pass
+
+_load_seed_leads()
 
 app = FastAPI(title="Majelisku Social Assist")
 
@@ -290,6 +321,52 @@ def api_add_thread(req: AddThreadRequest):
     process_candidates()
     return {"status": "ok", "post_id": post_id, "stats": get_stats()}
 
+class ImportPostItem(BaseModel):
+    post_id: Optional[str] = ""
+    author: Optional[str] = ""
+    text: str
+    url: Optional[str] = ""
+    created_at: Optional[str] = ""
+
+class ImportPostsRequest(BaseModel):
+    posts: List[ImportPostItem]
+
+@app.post("/api/import-posts")
+def api_import_posts(req: ImportPostsRequest):
+    """Import hasil scrape eksternal (mis. sapuan sosial Muse) ke pipeline.
+
+    Setiap postingan langsung melewati tahap 2 (saring + draft) secara otomatis,
+    sehingga hasil import yang lolos filter langsung muncul di Antrean Review.
+    """
+    cleaned = []
+    for p in req.posts:
+        text = (p.text or "").strip()
+        if not text:
+            continue
+        pid = (p.post_id or "").strip()
+        if not pid:
+            pid = "import_" + hashlib.sha256(((p.url or "") + "|" + text).encode("utf-8")).hexdigest()[:12]
+        cleaned.append({
+            "post_id": pid,
+            "author": (p.author or "").strip().lstrip("@"),
+            "text": text,
+            "url": (p.url or "").strip(),
+            "created_at": (p.created_at or "").strip() or datetime.now(timezone.utc).isoformat(),
+        })
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="Tidak ada postingan valid untuk diimport (field text wajib).")
+    inserted = save_raw_posts(cleaned)
+    classified = classify_pending_posts()
+    drafted = process_candidates()
+    return {
+        "status": "ok",
+        "received": len(cleaned),
+        "inserted": inserted,
+        "classified": classified,
+        "drafted": drafted,
+        "stats": get_stats(),
+    }
+
 @app.post("/api/seed-fresh-samples")
 def api_seed_fresh_samples():
     now_str = datetime.now(timezone.utc).isoformat()
@@ -464,6 +541,41 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             <div class="bg-white border border-slate-200 p-4 rounded-lg">
                 <div class="text-xs text-slate-500 font-medium">Disetujui & Siap Posting</div>
                 <div id="stat-approved" class="text-xl font-bold text-slate-900 mt-1">0</div>
+            </div>
+        </div>
+
+        <!-- Pipeline 3 Langkah -->
+        <div class="bg-white border border-emerald-200 rounded-lg p-4 sm:p-5 mb-6 shadow-xs">
+            <div class="flex items-center gap-2 mb-1">
+                <span class="text-base">🚀</span>
+                <h2 class="text-sm font-bold text-slate-900">Pipeline — 3 Langkah Mudah</h2>
+            </div>
+            <p class="text-xs text-slate-500 mb-4">Ambil postingan pencari kajian &rarr; sistem menyaring &amp; membuatkan draft balasan otomatis &rarr; kamu cukup review dan balas. Tidak ada auto-posting.</p>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div class="border border-slate-200 rounded-lg p-3.5">
+                    <div class="text-xs font-bold text-emerald-800 mb-1">LANGKAH 1 — AMBIL</div>
+                    <p class="text-xs text-slate-500 mb-3">Tarik dari Threads, atau tempel hasil scrape eksternal (format JSON: daftar {author, text, url, created_at}).</p>
+                    <div class="flex flex-wrap gap-2 mb-3">
+                        <button onclick="runPipeline()" class="text-xs font-semibold px-3 py-1.5 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white transition">🔄 Tarik dari Threads</button>
+                        <button onclick="pullPublicThreads()" class="text-xs font-semibold px-3 py-1.5 rounded-md bg-slate-800 hover:bg-slate-900 text-white transition">🌐 Thread Orang Lain</button>
+                    </div>
+                    <textarea id="import-json" rows="4" class="w-full text-xs font-mono p-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-emerald-600 focus:outline-none" placeholder='[{"author":"namaakun","text":"kajian sunnah di bandung dimana ya?","url":"https://www.threads.com/@akun/post/xxx","created_at":"2026-10-14T08:00:00+00:00"}]'></textarea>
+                    <button id="btn-import" onclick="importScrape()" class="mt-2 w-full text-xs font-semibold px-3 py-2 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white transition">⬆️ Import Hasil Scrape</button>
+                </div>
+                <div class="border border-slate-200 rounded-lg p-3.5">
+                    <div class="text-xs font-bold text-emerald-800 mb-1">LANGKAH 2 — SARING &amp; DRAFT</div>
+                    <p class="text-xs text-slate-500 mb-3">Berjalan <b>otomatis</b> setiap selesai Langkah 1. Postingan diskor, yang lolos jadi kandidat, lalu AI menyusun draft balasan bridging ke Majelisku.web.id.</p>
+                    <div class="space-y-1.5 text-xs text-slate-600">
+                        <div class="flex justify-between"><span>Total postingan masuk</span><b id="pipe-total" class="text-slate-900">0</b></div>
+                        <div class="flex justify-between"><span>Lolos filter (kandidat)</span><b id="pipe-candidates" class="text-slate-900">0</b></div>
+                        <div class="flex justify-between"><span>Draft menunggu review</span><b id="pipe-pending" class="text-emerald-800">0</b></div>
+                    </div>
+                </div>
+                <div class="border border-slate-200 rounded-lg p-3.5">
+                    <div class="text-xs font-bold text-emerald-800 mb-1">LANGKAH 3 — REVIEW &amp; BALAS</div>
+                    <p class="text-xs text-slate-500 mb-3">Periksa draft di Antrean Review, edit bila perlu, setujui, lalu tempel balasannya ke postingan aslinya. Semua keputusan tetap di tangan manusia.</p>
+                    <button onclick="switchTab('review')" class="text-xs font-semibold px-3 py-2 rounded-md bg-slate-900 hover:bg-slate-800 text-white transition w-full">📋 Buka Antrean Review</button>
+                </div>
             </div>
         </div>
 
@@ -837,6 +949,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 document.getElementById('badge-raw-count').innerText = data.total_raw;
                 document.getElementById('badge-approved-count').innerText = data.approved;
                 document.getElementById('badge-skipped-count').innerText = data.skipped || 0;
+                const pipeTotal = document.getElementById('pipe-total');
+                if (pipeTotal) pipeTotal.innerText = data.total_raw;
+                const pipeCand = document.getElementById('pipe-candidates');
+                if (pipeCand) pipeCand.innerText = data.total_candidates;
+                const pipePend = document.getElementById('pipe-pending');
+                if (pipePend) pipePend.innerText = data.pending_review;
 
                 // Update Status Pills di Navbar
                 const local = getLocalSettings();
@@ -1649,6 +1767,45 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 btn.disabled = false;
                 icon.innerText = '🔄';
                 text.innerText = 'Jalankan Pipeline';
+            }
+        }
+
+        async function importScrape() {
+            const ta = document.getElementById('import-json');
+            const btn = document.getElementById('btn-import');
+            let parsed;
+            try {
+                parsed = JSON.parse(ta.value);
+            } catch (e) {
+                showToast('Format JSON tidak valid. Tempel daftar postingan dalam format JSON.');
+                return;
+            }
+            const posts = Array.isArray(parsed) ? parsed : (parsed.posts || []);
+            if (!posts.length) {
+                showToast('Tidak ada postingan di dalam JSON.');
+                return;
+            }
+            btn.disabled = true;
+            btn.innerText = '⏳ Mengimport...';
+            try {
+                const res = await authFetch('/api/import-posts', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ posts })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Import gagal');
+                showToast(`Import selesai: ${data.inserted} baru masuk, ${data.classified} disaring, ${data.drafted} draft dibuat.`);
+                ta.value = '';
+                fetchStats();
+                loadQueue();
+                loadRawPosts();
+                switchTab(data.drafted > 0 ? 'review' : 'raw');
+            } catch (e) {
+                showToast('Import gagal: ' + e.message);
+            } finally {
+                btn.disabled = false;
+                btn.innerText = '⬆️ Import Hasil Scrape';
             }
         }
 
