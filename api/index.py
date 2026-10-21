@@ -502,11 +502,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
         <!-- Pipeline 3 Langkah -->
         <div class="bg-white border border-emerald-200 rounded-lg p-4 sm:p-5 mb-6 shadow-xs">
-            <div class="flex items-center gap-2 mb-1">
+            <div class="flex items-center gap-2 mb-4">
                 <span class="text-base">🚀</span>
                 <h2 class="text-sm font-bold text-slate-900">Pipeline — 3 Langkah Mudah</h2>
             </div>
-            <p class="text-xs text-slate-500 mb-4">Ambil postingan pencari kajian &rarr; sistem menyaring &amp; membuatkan draft balasan otomatis &rarr; kamu cukup review dan balas. Tidak ada auto-posting.</p>
             <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div class="border border-slate-200 rounded-lg p-3.5">
                     <div class="text-xs font-bold text-emerald-800 mb-1">LANGKAH 1 — AMBIL</div>
