@@ -1,6 +1,7 @@
 import os
 import sys
 import uuid
+import requests
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -415,31 +416,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             </div>
         </div>
 
-        <!-- Secondary Action Bar (Cepat) -->
-        <div class="flex flex-wrap items-center justify-between gap-3 mb-4 bg-white border border-slate-200 p-3 rounded-lg shadow-sm">
-            <div class="text-xs text-slate-600 font-medium flex items-center gap-2">
-                <span>⚡</span>
-                <span>Aksi Pengujian Alur:</span>
-            </div>
-            <div class="flex flex-wrap items-center gap-2">
-                <button onclick="seedFreshSamples()" class="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded border border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 transition shadow-sm">
-                    <span>✨</span> Muat 3 Thread Baru (Uji AI Gemini)
-                </button>
-                <button onclick="openAddModal()" class="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 transition shadow-sm">
-                    <span>✍️</span> Tempel Thread Manual
-                </button>
-                <button onclick="resetAllQueue()" class="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded border border-slate-300 bg-white text-slate-600 hover:bg-slate-100 transition">
-                    <span>🔄</span> Reset Semua ke Antrean
-                </button>
-                <button onclick="clearMockData()" class="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 transition shadow-sm">
-                    <span>🧹</span> Hapus Data Mock
-                </button>
-                <button onclick="wipeDatabase()" class="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded border border-rose-300 bg-rose-50 text-rose-700 hover:bg-rose-100 transition shadow-sm" title="Hapus semua post dan draf di basis data agar bersih kembali ke 0">
-                    <span>🗑️</span> Reset Total Basis Data
-                </button>
-            </div>
-        </div>
-
         <!-- Tabs Navigation -->
         <div class="border-b border-slate-200 mb-6 flex flex-wrap gap-4 sm:gap-6">
             <button id="tab-review-btn" onclick="switchTab('review')" class="py-3 px-1 border-b-2 border-emerald-700 font-semibold text-sm text-emerald-800 flex items-center gap-2">
@@ -462,23 +438,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <!-- Section 1: Antrean Review -->
         <div id="view-review" class="space-y-4">
             <div id="review-loading" class="text-center py-12 text-slate-500">Memuat data antrean...</div>
-            <div id="review-empty" class="hidden text-center py-10 bg-white border border-dashed border-slate-300 rounded-lg p-6">
+            <div id="review-empty" class="hidden text-center py-12 bg-white border border-dashed border-slate-300 rounded-lg p-6">
                 <div class="text-3xl mb-2">📭</div>
                 <h3 class="text-base font-bold text-slate-800">Antrean review saat ini sedang kosong</h3>
-                <p class="text-xs text-slate-500 max-w-md mx-auto mt-1 mb-6">
-                    Semua thread kandidat telah selesai direview. Untuk menguji kemampuan AI Gemini menganalisis thread kajian sunnah, silakan pilih opsi di bawah:
+                <p class="text-xs text-slate-500 max-w-md mx-auto mt-1">
+                    Semua thread kandidat telah selesai direview atau belum ada data baru. Klik tombol "Jalankan Pipeline" di navbar atas untuk menarik dan memproses postingan Threads terbaru.
                 </p>
-                <div class="flex flex-wrap items-center justify-center gap-3">
-                    <button onclick="seedFreshSamples()" class="inline-flex items-center gap-2 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold px-4 py-2.5 rounded-md transition shadow-sm">
-                        <span>✨</span> Muat 3 Thread Baru untuk Diuji AI Gemini
-                    </button>
-                    <button onclick="resetAllQueue()" class="inline-flex items-center gap-2 border border-slate-300 hover:bg-slate-100 text-slate-700 text-xs font-semibold px-4 py-2.5 rounded-md transition">
-                        <span>🔄</span> Kembalikan Post yang Dilewati ke Antrean
-                    </button>
-                    <button onclick="openAddModal()" class="inline-flex items-center gap-2 border border-slate-300 hover:bg-slate-100 text-slate-700 text-xs font-semibold px-4 py-2.5 rounded-md transition">
-                        <span>✍️</span> Tempel Thread Manual
-                    </button>
-                </div>
             </div>
             <div id="review-list" class="space-y-4"></div>
         </div>
@@ -681,44 +646,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             </div>
         </div>
     </main>
-
-    <!-- Modal Input Thread Manual -->
-    <div id="modal-add" class="hidden fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-        <div class="bg-white rounded-lg border border-slate-200 shadow-xl max-w-lg w-full p-6">
-            <div class="flex items-center justify-between pb-3 border-b border-slate-200 mb-4">
-                <h3 class="font-bold text-slate-900 text-base flex items-center gap-2">
-                    <span>✍️</span> Input Postingan Threads Manual
-                </h3>
-                <button onclick="closeAddModal()" class="text-slate-400 hover:text-slate-600 font-bold text-lg">&times;</button>
-            </div>
-
-            <form onsubmit="event.preventDefault(); submitManualThread();" class="space-y-4">
-                <div>
-                    <label class="block text-xs font-semibold text-slate-700 mb-1">Username Pembuat Post (Opsional)</label>
-                    <input type="text" id="manual-author" class="w-full text-sm p-2.5 border border-slate-300 rounded-md focus:ring-2 focus:ring-emerald-600 focus:outline-none" placeholder="fajar_jaksel">
-                </div>
-
-                <div>
-                    <label class="block text-xs font-semibold text-slate-700 mb-1">Teks Postingan Threads <span class="text-red-500">*</span></label>
-                    <textarea id="manual-text" required rows="4" class="w-full text-sm p-2.5 border border-slate-300 rounded-md focus:ring-2 focus:ring-emerald-600 focus:outline-none" placeholder="Contoh: Teman-teman ada info kajian sunnah di sekitar Tebet gak ya? Mau mulai ikut ngaji lagi."></textarea>
-                </div>
-
-                <div>
-                    <label class="block text-xs font-semibold text-slate-700 mb-1">Tautan / URL Thread (Opsional)</label>
-                    <input type="url" id="manual-url" class="w-full text-sm p-2.5 border border-slate-300 rounded-md focus:ring-2 focus:ring-emerald-600 focus:outline-none" placeholder="https://www.threads.net/@user/post/123">
-                </div>
-
-                <div class="pt-2 flex items-center justify-end gap-2">
-                    <button type="button" onclick="closeAddModal()" class="px-4 py-2 border border-slate-300 rounded text-xs font-medium text-slate-600 hover:bg-slate-100 transition">
-                        Batal
-                    </button>
-                    <button type="submit" id="btn-submit-manual" class="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded text-xs font-semibold transition shadow-sm">
-                        Proses dengan AI
-                    </button>
-                </div>
-            </form>
-        </div>
-    </div>
 
     <!-- Toast Notification -->
     <div id="toast" class="fixed bottom-5 right-5 bg-slate-900 text-white px-4 py-2.5 rounded-md shadow-lg text-sm hidden transition z-50"></div>
