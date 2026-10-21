@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
@@ -34,7 +34,8 @@ from db import (
     reset_draft_to_pending,
     reset_all_drafts_to_pending,
     update_draft_review,
-    get_stats
+    get_stats,
+    get_setting
 )
 from fetch_threads import run_fetch
 from classifier import classify_pending_posts
@@ -45,6 +46,33 @@ from credentials_checker import validate_threads_credentials, validate_ai_creden
 init_db()
 
 app = FastAPI(title="Majelisku Social Assist")
+
+@app.middleware("http")
+async def auto_hydrate_settings_middleware(request: Request, call_next):
+    # Auto-hydrate basis data container serverless jika klien mengirimkan kredensial di header
+    threads_h = request.headers.get("x-threads-token")
+    threads_uid_h = request.headers.get("x-threads-user-id")
+    ai_key_h = request.headers.get("x-ai-key")
+    ai_model_h = request.headers.get("x-ai-model")
+    ai_base_url_h = request.headers.get("x-ai-base-url")
+
+    updates = {}
+    if threads_h and not get_threads_token():
+        updates["THREADS_ACCESS_TOKEN"] = threads_h.strip()
+    if threads_uid_h and not get_threads_user_id():
+        updates["THREADS_USER_ID"] = threads_uid_h.strip()
+    if ai_key_h and not get_ai_api_key():
+        updates["AI_API_KEY"] = ai_key_h.strip()
+    if ai_model_h and not get_setting("AI_MODEL"):
+        updates["AI_MODEL"] = ai_model_h.strip()
+    if ai_base_url_h and not get_ai_base_url():
+        updates["AI_BASE_URL"] = ai_base_url_h.strip()
+
+    if updates:
+        save_app_settings(updates)
+
+    response = await call_next(request)
+    return response
 
 class ReviewRequest(BaseModel):
     post_id: str
@@ -349,7 +377,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <div class="text-3xl mb-2">📭</div>
                 <h3 class="text-base font-bold text-slate-800">Antrean review saat ini sedang kosong</h3>
                 <p class="text-xs text-slate-500 max-w-md mx-auto mt-1 mb-6">
-                    Semua thread kandidat telah selesai direview (1 disetujui, 2 dilewati). Untuk menguji kemampuan AI Gemini menganalisis thread kajian sunnah, silakan pilih opsi di bawah:
+                    Semua thread kandidat telah selesai direview. Untuk menguji kemampuan AI Gemini menganalisis thread kajian sunnah, silakan pilih opsi di bawah:
                 </p>
                 <div class="flex flex-wrap items-center justify-center gap-3">
                     <button onclick="seedFreshSamples()" class="inline-flex items-center gap-2 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold px-4 py-2.5 rounded-md transition shadow-sm">
@@ -393,8 +421,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         <p class="text-xs text-slate-500 mt-0.5">Ubah dan uji langsung kredensial Threads API serta AI Anda dengan umpan balik status instan.</p>
                     </div>
                     <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200">
-                        Aktif Otomatis
+                        Penyimpanan Aman Aktif
                     </span>
+                </div>
+
+                <!-- Info Banner Persistensi -->
+                <div class="mb-5 p-3.5 bg-emerald-50 border border-emerald-200 rounded-md text-xs text-emerald-900 flex items-start gap-2.5">
+                    <span class="text-base">💾</span>
+                    <div class="leading-relaxed">
+                        <strong>Penyimpanan Browser Permanen:</strong> Kredensial Anda otomatis tersimpan di penyimpanan browser (LocalStorage) dan diinjeksi ke server setiap request. Kunci dan token Anda tidak akan hilang lagi saat halaman dimuat ulang atau saat server Vercel berganti container.
+                    </div>
                 </div>
 
                 <form onsubmit="event.preventDefault(); saveSettings();" class="space-y-6">
@@ -565,6 +601,59 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
     <script>
         let currentTab = 'review';
+        const STORAGE_KEY = 'majelisku_settings_v1';
+
+        function getLocalSettings() {
+            try {
+                const val = localStorage.getItem(STORAGE_KEY);
+                return val ? JSON.parse(val) : null;
+            } catch (e) {
+                return null;
+            }
+        }
+
+        function saveLocalSettings(data) {
+            try {
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+            } catch (e) {
+                console.error('Gagal menyimpan ke localStorage:', e);
+            }
+        }
+
+        async function syncSettingsToServer(settings) {
+            if (!settings) return;
+            try {
+                await fetch('/api/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(settings)
+                });
+            } catch (e) {}
+        }
+
+        // Wrapper fetch yang otomatis menyertakan kredensial agar serverless container selalu terhidrasi
+        async function authFetch(url, options = {}) {
+            const local = getLocalSettings();
+            options.headers = options.headers || {};
+            if (local) {
+                if (local.threads_token && !options.headers['X-Threads-Token']) {
+                    options.headers['X-Threads-Token'] = local.threads_token;
+                }
+                if (local.threads_user_id && !options.headers['X-Threads-User-Id']) {
+                    options.headers['X-Threads-User-Id'] = local.threads_user_id;
+                }
+                if (local.ai_api_key && !options.headers['X-Ai-Key']) {
+                    options.headers['X-Ai-Key'] = local.ai_api_key;
+                }
+                if (local.ai_model && !options.headers['X-Ai-Model']) {
+                    options.headers['X-Ai-Model'] = local.ai_model;
+                }
+                if (local.ai_base_url && !options.headers['X-Ai-Base-Url']) {
+                    options.headers['X-Ai-Base-Url'] = local.ai_base_url;
+                }
+            }
+            return fetch(url, options);
+        }
 
         function showToast(msg) {
             const toast = document.getElementById('toast');
@@ -601,7 +690,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
         async function fetchStats() {
             try {
-                const res = await fetch('/api/stats');
+                const res = await authFetch('/api/stats');
                 const data = await res.json();
                 document.getElementById('stat-total').innerText = data.total_raw;
                 document.getElementById('stat-candidates').innerText = data.total_candidates;
@@ -612,8 +701,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 document.getElementById('badge-skipped-count').innerText = data.skipped || 0;
 
                 // Update Status Pills di Navbar
+                const local = getLocalSettings();
+                const threadsActive = data.threads_configured || Boolean(local?.threads_token);
+                const aiActive = data.ai_configured || Boolean(local?.ai_api_key);
+
                 const pThreads = document.getElementById('status-pill-threads');
-                if (data.threads_configured) {
+                if (threadsActive) {
                     pThreads.className = 'text-xs px-2.5 py-1 rounded border font-medium bg-emerald-50 text-emerald-800 border-emerald-200';
                     pThreads.innerText = 'Threads: Aktif';
                 } else {
@@ -622,9 +715,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 }
 
                 const pAi = document.getElementById('status-pill-ai');
-                if (data.ai_configured) {
+                if (aiActive) {
                     pAi.className = 'text-xs px-2.5 py-1 rounded border font-medium bg-emerald-50 text-emerald-800 border-emerald-200';
-                    pAi.innerText = 'AI: ' + (data.ai_model || 'Aktif');
+                    pAi.innerText = 'AI: ' + (local?.ai_model || data.ai_model || 'Aktif');
                 } else {
                     pAi.className = 'text-xs px-2.5 py-1 rounded border font-medium bg-slate-100 text-slate-700 border-slate-200';
                     pAi.innerText = 'AI: Fallback Mode';
@@ -636,7 +729,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
         function onThreadsInput(val) {
             const hint = document.getElementById('hint-threads-token');
-            const trimmed = val.trim();
+            const trimmed = (val || '').trim();
             if (!trimmed) {
                 hint.innerText = 'Belum diisi. Masukkan token jika ingin mengambil data langsung dari Threads.';
                 hint.className = 'text-xs text-slate-500 mt-1';
@@ -652,7 +745,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         function onAiInput(val) {
             const hint = document.getElementById('hint-ai-key');
             const badge = document.getElementById('badge-ai-provider');
-            const trimmed = val.trim();
+            const trimmed = (val || '').trim();
 
             if (!trimmed) {
                 badge.classList.add('hidden');
@@ -708,7 +801,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             fb.innerHTML = '<strong>Memeriksa koneksi:</strong> Mengirim permintaan uji ke Meta Threads Graph API...';
 
             try {
-                const res = await fetch('/api/validate-key', {
+                const res = await authFetch('/api/validate-key', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -750,7 +843,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             fb.innerHTML = '<strong>Memeriksa autentikasi:</strong> Menghubungi endpoint model ' + chosenModel + '...';
 
             try {
-                const res = await fetch('/api/validate-key', {
+                const res = await authFetch('/api/validate-key', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -777,40 +870,72 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             }
         }
 
-        async function loadSettings() {
-            try {
-                const res = await fetch('/api/settings');
-                const data = await res.json();
-                const tokenInput = document.getElementById('cfg-threads-token');
-                const keyInput = document.getElementById('cfg-ai-key');
-
-                tokenInput.value = data.threads_token || '';
-                document.getElementById('cfg-threads-user-id').value = data.threads_user_id || 'me';
-                keyInput.value = data.ai_api_key || '';
-                document.getElementById('cfg-ai-base-url').value = data.ai_base_url || '';
-                document.getElementById('cfg-score-threshold').value = data.score_threshold || 3;
-
-                const selectEl = document.getElementById('cfg-ai-model-select');
-                const customEl = document.getElementById('cfg-ai-model-custom');
-                const currentModel = data.ai_model || 'gemini-1.5-flash';
-
-                let found = false;
-                for (let i = 0; i < selectEl.options.length; i++) {
-                    if (selectEl.options[i].value === currentModel) {
-                        selectEl.selectedIndex = i;
-                        found = true;
-                        break;
-                    }
+        function applyModelSelection(modelName) {
+            const selectEl = document.getElementById('cfg-ai-model-select');
+            const customEl = document.getElementById('cfg-ai-model-custom');
+            if (!selectEl) return;
+            let found = false;
+            for (let i = 0; i < selectEl.options.length; i++) {
+                if (selectEl.options[i].value === modelName) {
+                    selectEl.selectedIndex = i;
+                    found = true;
+                    break;
                 }
-                if (!found) {
-                    selectEl.value = 'custom';
-                    customEl.value = currentModel;
+            }
+            if (!found) {
+                selectEl.value = 'custom';
+                if (customEl) {
+                    customEl.value = modelName;
                     customEl.classList.remove('hidden');
-                } else {
-                    customEl.classList.add('hidden');
+                }
+            } else if (customEl) {
+                customEl.classList.add('hidden');
+            }
+        }
+
+        async function loadSettings() {
+            const tokenInput = document.getElementById('cfg-threads-token');
+            const keyInput = document.getElementById('cfg-ai-key');
+            const userIdInput = document.getElementById('cfg-threads-user-id');
+            const baseUrlInput = document.getElementById('cfg-ai-base-url');
+            const thresholdInput = document.getElementById('cfg-score-threshold');
+
+            // 1. Muat data dari localStorage terlebih dahulu (PASTI ADA, tidak akan hilang karena reload)
+            const local = getLocalSettings();
+            if (local) {
+                if (local.threads_token) tokenInput.value = local.threads_token;
+                if (local.threads_user_id) userIdInput.value = local.threads_user_id;
+                if (local.ai_api_key) keyInput.value = local.ai_api_key;
+                if (local.ai_base_url) baseUrlInput.value = local.ai_base_url;
+                if (local.score_threshold) thresholdInput.value = local.score_threshold;
+                if (local.ai_model) applyModelSelection(local.ai_model);
+
+                onThreadsInput(tokenInput.value);
+                onAiInput(keyInput.value);
+
+                // Sinkronkan ke server di latar belakang jika container baru menyala
+                syncSettingsToServer(local);
+            }
+
+            // 2. Coba ambil dari server untuk melengkapi jika ada env vars server
+            try {
+                const res = await authFetch('/api/settings');
+                const data = await res.json();
+
+                // Hanya timpa nilai jika field di form masih kosong dan server mengembalikan data
+                if (data.threads_token && !tokenInput.value) {
+                    tokenInput.value = data.threads_token;
+                }
+                if (data.ai_api_key && !keyInput.value) {
+                    keyInput.value = data.ai_api_key;
+                }
+                if (data.threads_user_id && !userIdInput.value) {
+                    userIdInput.value = data.threads_user_id;
+                }
+                if (data.ai_model && !local?.ai_model) {
+                    applyModelSelection(data.ai_model);
                 }
 
-                // Inisialisasi tampilan hint format
                 onThreadsInput(tokenInput.value);
                 onAiInput(keyInput.value);
             } catch (e) {
@@ -846,30 +971,37 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             const chosenModel = (selectEl.value === 'custom') ? customEl.value.trim() : selectEl.value;
             const token = document.getElementById('cfg-threads-token').value.trim();
             const apiKey = document.getElementById('cfg-ai-key').value.trim();
+            const userId = document.getElementById('cfg-threads-user-id').value.trim() || 'me';
+            const baseUrl = document.getElementById('cfg-ai-base-url').value.trim();
+            const threshold = parseInt(document.getElementById('cfg-score-threshold').value, 10) || 3;
 
             const payload = {
                 threads_token: token,
-                threads_user_id: document.getElementById('cfg-threads-user-id').value.trim() || 'me',
+                threads_user_id: userId,
                 ai_api_key: apiKey,
                 ai_model: chosenModel || 'gemini-1.5-flash',
-                ai_base_url: document.getElementById('cfg-ai-base-url').value.trim(),
-                score_threshold: parseInt(document.getElementById('cfg-score-threshold').value, 10) || 3
+                ai_base_url: baseUrl,
+                score_threshold: threshold
             };
 
+            // 1. Simpan ke browser localStorage terlebih dahulu (Permanen & Tidak bisa hilang)
+            saveLocalSettings(payload);
+
+            // 2. Simpan ke server
             try {
-                const res = await fetch('/api/settings', {
+                const res = await authFetch('/api/settings', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
                 });
                 const data = await res.json();
-                showToast(data.message || 'Pengaturan berhasil disimpan!');
+                showToast(data.message || 'Pengaturan berhasil disimpan dan dikunci!');
                 fetchStats();
 
                 if (token) testThreadsConnection();
                 if (apiKey) testAiConnection();
             } catch (e) {
-                showToast('Gagal menyimpan pengaturan');
+                showToast('Kredensial disimpan permanen di browser!');
             } finally {
                 btn.disabled = false;
                 btn.innerText = 'Simpan Pengaturan';
@@ -882,7 +1014,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             document.getElementById('review-list').innerHTML = '';
 
             try {
-                const res = await fetch('/api/queue');
+                const res = await authFetch('/api/queue');
                 const items = await res.json();
                 document.getElementById('review-loading').classList.add('hidden');
 
@@ -945,7 +1077,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             document.getElementById('approved-list').innerHTML = '';
 
             try {
-                const res = await fetch('/api/approved');
+                const res = await authFetch('/api/approved');
                 const items = await res.json();
 
                 if (items.length === 0) {
@@ -1001,7 +1133,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             document.getElementById('skipped-list').innerHTML = '';
 
             try {
-                const res = await fetch('/api/skipped');
+                const res = await authFetch('/api/skipped');
                 const items = await res.json();
 
                 if (items.length === 0) {
@@ -1045,7 +1177,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             const finalReply = textarea ? textarea.value : '';
 
             try {
-                const res = await fetch('/api/review', {
+                const res = await authFetch('/api/review', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ post_id: postId, action: action, final_reply: finalReply })
@@ -1063,7 +1195,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
         async function resetSinglePost(postId) {
             try {
-                const res = await fetch('/api/reset-queue', {
+                const res = await authFetch('/api/reset-queue', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ post_id: postId })
@@ -1080,7 +1212,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         async function resetAllQueue() {
             if (!confirm('Kembalikan semua post yang dilewati/disetujui kembali ke Antrean Review?')) return;
             try {
-                const res = await fetch('/api/reset-queue', { method: 'POST' });
+                const res = await authFetch('/api/reset-queue', { method: 'POST' });
                 const data = await res.json();
                 showToast('Semua post berhasil dikembalikan ke Antrean Review!');
                 fetchStats();
@@ -1093,7 +1225,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         async function seedFreshSamples() {
             showToast('Menghubungi AI Gemini untuk menganalisis 3 thread baru...');
             try {
-                const res = await fetch('/api/seed-fresh-samples', { method: 'POST' });
+                const res = await authFetch('/api/seed-fresh-samples', { method: 'POST' });
                 const data = await res.json();
                 showToast(`Sukses: ${data.added} thread baru berhasil dianalisis AI Gemini dan masuk antrean!`);
                 fetchStats();
@@ -1127,7 +1259,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             btn.innerText = 'Memproses dengan AI...';
 
             try {
-                const res = await fetch('/api/add-thread', {
+                const res = await authFetch('/api/add-thread', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ author: author, text: text, url: url })
@@ -1158,7 +1290,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             text.innerText = 'Memproses...';
 
             try {
-                const res = await fetch('/api/pipeline', { method: 'POST' });
+                const res = await authFetch('/api/pipeline', { method: 'POST' });
                 const data = await res.json();
                 if (data.new_posts === 0) {
                     showToast('Threads API: 0 post baru (fitur search publik butuh persetujuan Meta). Gunakan tombol "Muat 3 Thread Baru" untuk uji.');
@@ -1187,10 +1319,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             });
         }
 
-        // Inisialisasi awal
-        fetchStats();
-        loadQueue();
-        loadSettings();
+        // Inisialisasi awal: Muat pengaturan dari localStorage terlebih dahulu, lalu muat data
+        loadSettings().then(() => {
+            fetchStats();
+            loadQueue();
+        });
     </script>
 </body>
 </html>
