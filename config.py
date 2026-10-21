@@ -1,5 +1,4 @@
 import os
-import shutil
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -7,17 +6,20 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 
-# Pada lingkungan Vercel Serverless, filesystem bersifat read-only kecuali /tmp
-if os.getenv("VERCEL"):
+# Path database SQLite. AUDIT 2026-10-22: env DB_PATH selalu didahulukan di
+# semua lingkungan (dulu di Vercel di-hardcode "/tmp/data.db" dan ada logika
+# menyalin data.db terbundel dari repo — data basi/karangan lama bisa ikut
+# terbawa dan muncul lagi di dashboard; logika salin itu DIHAPUS).
+# Default Vercel tetap /tmp/data.db karena filesystem serverless read-only
+# selain /tmp. KETERBATASAN: /tmp bersifat ephemeral per instance — data
+# review tidak dijamin bertahan lintas cold start/deploy. Untuk persistensi
+# sejati, arahkan DB_PATH ke volume persisten atau migrasi ke DB eksternal.
+if os.getenv("DB_PATH"):
+    DB_PATH = os.getenv("DB_PATH")
+elif os.getenv("VERCEL"):
     DB_PATH = "/tmp/data.db"
-    bundled_db = BASE_DIR / "data.db"
-    if not os.path.exists(DB_PATH) and bundled_db.exists():
-        try:
-            shutil.copyfile(bundled_db, DB_PATH)
-        except Exception:
-            pass
 else:
-    DB_PATH = os.getenv("DB_PATH", str(BASE_DIR / "data.db"))
+    DB_PATH = str(BASE_DIR / "data.db")
 
 # Konfigurasi Threads API
 THREADS_ACCESS_TOKEN = os.getenv("THREADS_ACCESS_TOKEN", "").strip()

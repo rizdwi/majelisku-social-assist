@@ -1,11 +1,11 @@
 import argparse
 import logging
+import os
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 import requests
 from config import (
     get_threads_token,
-    get_threads_user_id,
     get_threads_api_base_url,
     KEYWORDS,
     DB_PATH
@@ -15,43 +15,29 @@ from db import save_raw_posts, init_db
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-MOCK_SAMPLE_POSTS = [
-    {
-        "post_id": "thread_mock_001",
-        "author": "ahmad_bekasi",
-        "text": "Teman-teman ada yang tau info kajian sunnah rutin di sekitaran Bekasi Barat gak ya? Mau mulai ikut ngaji lagi.",
-        "url": "https://www.threads.net/@ahmad_bekasi/post/mock001",
-        "created_at": datetime.now(timezone.utc).isoformat()
-    },
-    {
-        "post_id": "thread_mock_002",
-        "author": "fajar_jaksel",
-        "text": "Minta saran dong majelis taklim atau kajian yang bahas kitab aqidah sekitar Tebet jaksel, infonya dimana ya?",
-        "url": "https://www.threads.net/@fajar_jaksel/post/mock002",
-        "created_at": datetime.now(timezone.utc).isoformat()
-    },
-    {
-        "post_id": "thread_mock_003",
-        "author": "sarkas_user",
-        "text": "Banyak yang nyari kajian sunnah tapi giliran diajak ngaji beneran wkwk doang gak action cuma teori :)",
-        "url": "https://www.threads.net/@sarkas_user/post/mock003",
-        "created_at": datetime.now(timezone.utc).isoformat()
-    },
-    {
-        "post_id": "thread_mock_004",
-        "author": "dina_ramadhani",
-        "text": "Lagi nyari tempat ngaji bareng ustadz ahlus sunnah yang ramah pemula di Depok, barangkali ada jadwal rutin mingguan?",
-        "url": "https://www.threads.net/@dina_ramadhani/post/mock004",
-        "created_at": datetime.now(timezone.utc).isoformat()
-    },
-    {
-        "post_id": "thread_mock_005",
-        "author": "random_curhat",
-        "text": "Sedih banget hari ini kerjaan numpuk gak ada habisnya, pengen liburan sejenak.",
-        "url": "https://www.threads.net/@random_curhat/post/mock005",
-        "created_at": datetime.now(timezone.utc).isoformat()
-    }
-]
+# CATATAN AUDIT 2026-10-22: Seluruh data contoh/karangan (MOCK_SAMPLE_POSTS dan
+# CURATED_PUBLIC_THREADS) DIHAPUS PERMANEN. Versi lama run_fetch() otomatis
+# memasukkan postingan karangan itu ke database setiap kali token Threads
+# kosong atau API mengembalikan 0 hasil — itulah sebabnya "mockup" terus
+# muncul di dashboard menyamar sebagai data asli. Sekarang: tidak ada token /
+# tidak ada hasil = 0 postingan, titik. Data hanya boleh masuk dari
+# (1) Threads API resmi, (2) endpoint /api/import-posts (hasil scrape nyata),
+# (3) input manual admin, (4) seed data/leads_seed.json (leads ASLI hasil
+# scrape, dimuat sekali — lihat api/index.py).
+
+def _own_usernames() -> set:
+    """Username akun sendiri yang tidak boleh ditarik/dibalas.
+
+    Diisi dari env OWN_THREADS_USERNAME (boleh koma, tanpa @) dan, bila token
+    tersedia, dari endpoint /me. Tidak ada username yang di-hardcode.
+    """
+    ignored = set()
+    raw = os.getenv("OWN_THREADS_USERNAME", "")
+    for part in raw.split(","):
+        part = part.strip().lstrip("@").lower()
+        if part:
+            ignored.add(part)
+    return ignored
 
 def fetch_from_threads_api() -> List[Dict[str, Any]]:
     token = get_threads_token()
@@ -62,7 +48,7 @@ def fetch_from_threads_api() -> List[Dict[str, Any]]:
         return []
 
     # Dapatkan akun sendiri agar TIDAK PERNAH menarik atau membalas status sendiri
-    ignored_users = {"rizkisndy"}
+    ignored_users = _own_usernames()
     try:
         me_res = requests.get(f"{api_base}/me", params={"fields": "id,username", "access_token": token}, timeout=10)
         if me_res.status_code == 200:
@@ -119,69 +105,18 @@ def fetch_from_threads_api() -> List[Dict[str, Any]]:
 
     return list(unique_map.values())
 
-# Postingan publik dari pengguna Threads lain yang riil mencari/menanyakan kajian
-CURATED_PUBLIC_THREADS = [
-    {
-        "post_id": "thread_pub_001",
-        "author": "mursidwa",
-        "text": "Warga Solo Mohon info kajian rutin ikhwan di seputaran Colomadu, Kartasura, Manahan dong. Pengen ikut kajian tatap muka lagi.",
-        "url": "https://www.threads.net/@mursidwa",
-        "created_at": datetime.now(timezone.utc).isoformat()
-    },
-    {
-        "post_id": "thread_pub_002",
-        "author": "farhan_alatas",
-        "text": "Ada rekomendasi info kajian sunnah di daerah Jaksel gak ya buat weekend ini? Mau mulai rutin ikut ngaji lagi.",
-        "url": "https://www.threads.net/search?q=info%20kajian%20jaksel",
-        "created_at": datetime.now(timezone.utc).isoformat()
-    },
-    {
-        "post_id": "thread_pub_003",
-        "author": "salma_nura",
-        "text": "Temen-temen info kajian muslimah di Bandung yang bahas tafsir atau fiqih wanita dong, lagi butuh banget yang offline.",
-        "url": "https://www.threads.net/search?q=kajian%20muslimah%20bandung",
-        "created_at": datetime.now(timezone.utc).isoformat()
-    },
-    {
-        "post_id": "thread_pub_004",
-        "author": "ahmad_fauzi_id",
-        "text": "Lagi nyari tempat kajian sunnah yang ramah pemula di sekitaran Depok Margonda, ada saran masjid atau komunitas kajian?",
-        "url": "https://www.threads.net/search?q=kajian%20depok%20sunnah",
-        "created_at": datetime.now(timezone.utc).isoformat()
-    },
-    {
-        "post_id": "thread_pub_005",
-        "author": "dina_ramadhani",
-        "text": "Mau tanya info jadwal kajian sunnah buat keluarga di Tangerang Selatan atau Bintaro hari Sabtu/Ahad besok dimana ya infonya?",
-        "url": "https://www.threads.net/search?q=kajian%20tangsel%20bintaro",
-        "created_at": datetime.now(timezone.utc).isoformat()
-    },
-    {
-        "post_id": "thread_pub_006",
-        "author": "hafizhr_",
-        "text": "Permisi, mau nanya info kajian sunnah di Surabaya barat ada dimana aja ya jadwal rutinnya?",
-        "url": "https://www.threads.net/search?q=kajian%20surabaya%20barat",
-        "created_at": datetime.now(timezone.utc).isoformat()
-    }
-]
-
-def run_fetch(mock_mode: bool = False, db_path: Optional[str] = None) -> int:
+def run_fetch(db_path: Optional[str] = None) -> int:
+    """Tarik postingan dari Threads API resmi. Tanpa token = 0 (jujur, tanpa data karangan)."""
     init_db(db_path or DB_PATH)
     token = get_threads_token()
 
-    if mock_mode or (not token):
-        if not token and not mock_mode:
-            logger.info("Kredensial Threads belum terisi. Memuat data sampel untuk verifikasi alur.")
-        posts = CURATED_PUBLIC_THREADS
-    else:
-        posts = fetch_from_threads_api()
-        # Jika API Meta Threads mengembalikan 0 postingan orang lain (karena Sandbox hanya mengizinkan tester):
-        if not posts:
-            logger.info("Pencarian API Sandbox tidak menemukan postingan orang lain. Mengambil postingan publik pencari kajian.")
-            posts = CURATED_PUBLIC_THREADS
+    if not token:
+        logger.warning("Kredensial Threads belum terisi — tidak ada postingan yang ditarik (data karangan/fallback sudah dihapus).")
+        return 0
 
+    posts = fetch_from_threads_api()
     if not posts:
-        logger.info("Tidak ada post baru yang ditemukan.")
+        logger.info("Threads API mengembalikan 0 postingan. Tidak ada yang disimpan.")
         return 0
 
     inserted = save_raw_posts(posts, db_path or DB_PATH)
@@ -190,6 +125,5 @@ def run_fetch(mock_mode: bool = False, db_path: Optional[str] = None) -> int:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Tarik postingan dari Threads API resmi.")
-    parser.add_argument("--mock", action="store_true", help="Gunakan data sampel lokal untuk pengujian.")
-    args = parser.parse_args()
-    run_fetch(mock_mode=args.mock)
+    parser.parse_args()
+    run_fetch()

@@ -59,11 +59,14 @@ def call_ai_api(post_text: str) -> Dict[str, Any]:
     model = get_ai_model()
     base_url = get_ai_base_url()
 
-    # Jika API key belum diisi, gunakan fallback deterministik yang aman
+    # Jika API key belum diisi, gunakan fallback deterministik.
+    # AUDIT 2026-10-22: reasoning WAJIB jujur menyatakan ini template fallback
+    # TANPA validasi AI (versi lama menyamar sebagai hasil AI). Keputusan
+    # relevansi final tetap di tangan reviewer manusia.
     if not api_key:
         return {
             "is_relevant": True,
-            "reasoning": "Validasi otomatis (kredensial AI belum diisi, mode fallback aktif).",
+            "reasoning": "FALLBACK TANPA AI: kredensial AI belum diisi — draft template, relevansi BELUM divalidasi AI. Wajib dicek manual.",
             "draft_reply": "Assalamu'alaikum kak, untuk info jadwal kajian sunnah terdekat bisa coba cek di Majelisku.web.id ya. Semoga dimudahkan dan bermanfaat.",
             "include_bridging": True
         }
@@ -100,10 +103,12 @@ def call_ai_api(post_text: str) -> Dict[str, Any]:
         except Exception as e:
             logger.warning(f"Panggilan Google Gemini error: {e}")
 
-        # Jangan teruskan ke Anthropic/OpenAI jika kredensial adalah Google Gemini
+        # Jangan teruskan ke Anthropic/OpenAI jika kredensial adalah Google Gemini.
+        # AUDIT 2026-10-22: jalur ini tercapai hanya bila Gemini error / respons
+        # tak terurai — reasoning harus JUJUR soal itu, bukan mengklaim sukses.
         return {
             "is_relevant": True,
-            "reasoning": f"Google Gemini aktif ({gemini_model}), menghasilkan rekomendasi kajian.",
+            "reasoning": f"FALLBACK: panggilan Google Gemini ({gemini_model}) gagal/error — draft template, relevansi BELUM divalidasi AI. Wajib dicek manual.",
             "draft_reply": "Assalamu'alaikum kak, untuk info jadwal kajian sunnah terdekat yang shahih bisa coba dicek di Majelisku.web.id ya. Semoga dimudahkan.",
             "include_bridging": True
         }
@@ -172,7 +177,7 @@ def process_candidates(db_path: Optional[str] = None) -> int:
             logger.error(f"Gagal memproses post {cand['post_id']}: {e}")
             result = {
                 "is_relevant": True,
-                "reasoning": f"Draft otomatis disiapkan (fallback aman: {str(e)[:40]}).",
+                "reasoning": f"FALLBACK TANPA AI: panggilan AI error ({str(e)[:60]}) — draft template, relevansi BELUM divalidasi AI. Wajib dicek manual.",
                 "draft_reply": "Assalamu'alaikum kak, untuk info jadwal kajian sunnah terdekat bisa coba cek di Majelisku.web.id ya. Semoga dimudahkan dan bermanfaat.",
                 "include_bridging": True
             }

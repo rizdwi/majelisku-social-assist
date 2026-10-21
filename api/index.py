@@ -36,17 +36,17 @@ from db import (
     get_skipped_queue,
     reset_draft_to_pending,
     reset_all_drafts_to_pending,
-    clear_mock_posts,
     wipe_all_database_posts,
     get_candidates_without_draft,
     update_draft_review,
     get_stats,
     get_setting,
+    set_setting,
     get_all_raw_posts,
     force_candidate_and_draft,
     reclassify_all_raw_posts
 )
-from fetch_threads import run_fetch, CURATED_PUBLIC_THREADS
+from fetch_threads import run_fetch
 from classifier import classify_pending_posts
 from generate_draft import process_candidates
 from credentials_checker import validate_threads_credentials, validate_ai_credentials
@@ -56,8 +56,14 @@ init_db()
 
 # --- Seed leads hasil scrape eksternal (dimuat sekali saat DB masih kosong) ---
 def _load_seed_leads() -> None:
+    # AUDIT 2026-10-22: seed = leads ASLI hasil scrape (data/leads_seed.json),
+    # dimuat SEKALI. Flag settings 'seed_v1_done' memastikan seed tidak
+    # bangkit lagi setelah admin mengosongkan database.
     try:
+        if get_setting("seed_v1_done"):
+            return
         if get_stats().get("total_raw", 0) > 0:
+            set_setting("seed_v1_done", "1")
             return
         seed_path = ROOT_DIR / "data" / "leads_seed.json"
         if not seed_path.exists():
@@ -78,6 +84,7 @@ def _load_seed_leads() -> None:
             save_raw_posts(cleaned)
             classify_pending_posts()
             process_candidates()
+            set_setting("seed_v1_done", "1")
     except Exception:
         pass
 
@@ -121,9 +128,9 @@ class SettingsRequest(BaseModel):
     threads_token: Optional[str] = ""
     threads_user_id: Optional[str] = "me"
     ai_api_key: Optional[str] = ""
-    ai_model: Optional[str] = "gemini-1.5-flash"
+    ai_model: Optional[str] = "claude-3-5-sonnet-20241022"
     ai_base_url: Optional[str] = ""
-    score_threshold: Optional[int] = 3
+    score_threshold: Optional[int] = 2
 
 class ValidateRequest(BaseModel):
     target: str  # "threads" | "ai"
@@ -224,11 +231,6 @@ def api_reset_queue(req: Optional[ResetQueueRequest] = None):
         reset_all_drafts_to_pending()
     return {"status": "ok", "stats": get_stats()}
 
-@app.post("/api/clear-mock")
-def api_clear_mock():
-    clear_mock_posts()
-    return {"status": "ok", "stats": get_stats()}
-
 @app.post("/api/wipe-database")
 def api_wipe_database():
     wipe_all_database_posts()
@@ -252,7 +254,7 @@ def api_trigger_meta_test_calls():
     # 1. Panggilan threads_basic: me info
     try:
         r1 = requests.get(
-            "https://graph.threads.net/v1.0/me",
+            f"{get_threads_api_base_url()}/me",
             params={"fields": "id,username", "access_token": token},
             timeout=10
         )
@@ -266,7 +268,7 @@ def api_trigger_meta_test_calls():
     # 2. Panggilan threads_basic: me/threads
     try:
         r2 = requests.get(
-            "https://graph.threads.net/v1.0/me/threads",
+            f"{get_threads_api_base_url()}/me/threads",
             params={"fields": "id,text", "access_token": token},
             timeout=10
         )
@@ -280,7 +282,7 @@ def api_trigger_meta_test_calls():
     # 3. Panggilan threads_keyword_search: keyword_search (endpoint resmi Meta)
     try:
         r3 = requests.get(
-            "https://graph.threads.net/v1.0/keyword_search",
+            f"{get_threads_api_base_url()}/keyword_search",
             params={
                 "q": "kajian",
                 "search_type": "RECENT",
@@ -367,49 +369,7 @@ def api_import_posts(req: ImportPostsRequest):
         "stats": get_stats(),
     }
 
-@app.post("/api/seed-fresh-samples")
-def api_seed_fresh_samples():
-    now_str = datetime.now(timezone.utc).isoformat()
-    samples = [
-        {
-            "post_id": f"live_kajian_{uuid.uuid4().hex[:6]}",
-            "author": "kajian_jaksel",
-            "text": "Bismillah, ada yang punya info rekomendasi kajian sunnah rutin di Jakarta Selatan (sekitar Blok M atau Senopati) untuk akhwat pemula? Mau mulai ikut ngaji offline lagi.",
-            "url": "https://www.threads.net/search?q=kajian+sunnah+jakarta+selatan",
-            "created_at": now_str
-        },
-        {
-            "post_id": f"live_kajian_{uuid.uuid4().hex[:6]}",
-            "author": "kajian_tangerang",
-            "text": "Info tempat ngaji / majelis taklim di BSD Serpong yang rutin bahas kitab aqidah shahihah dong agan-agan, jadwalnya dimana ya?",
-            "url": "https://www.threads.net/search?q=kajian+sunnah+bsd+tangerang",
-            "created_at": now_str
-        },
-        {
-            "post_id": f"live_kajian_{uuid.uuid4().hex[:6]}",
-            "author": "kajian_bandung",
-            "text": "Kira-kira sabtu atau ahad besok ada info jadwal kajian sunnah di daerah Bandung kota gak ya? Mau ajak keluarga ngaji bareng.",
-            "url": "https://www.threads.net/search?q=kajian+sunnah+bandung",
-            "created_at": now_str
-        }
-    ]
-    save_raw_posts(samples)
-    classified = classify_pending_posts()
-    drafted = process_candidates()
-    return {"status": "ok", "added": len(samples), "classified": classified, "drafted": drafted, "stats": get_stats()}
 
-@app.post("/api/pull-public-threads")
-def api_pull_public_threads():
-    inserted = save_raw_posts(CURATED_PUBLIC_THREADS)
-    classified = classify_pending_posts()
-    drafted = process_candidates()
-    return {
-        "status": "ok",
-        "inserted": inserted,
-        "classified": classified,
-        "drafted": drafted,
-        "stats": get_stats()
-    }
 
 @app.post("/api/pipeline")
 def api_pipeline():
@@ -507,11 +467,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <span id="status-pill-ai" class="text-xs px-2.5 py-1 rounded border font-medium bg-slate-100 text-slate-600 border-slate-200">
                     AI: Memeriksa...
                 </span>
-                <button onclick="pullPublicThreads()" class="inline-flex items-center gap-1.5 bg-slate-800 hover:bg-slate-900 text-white text-sm font-medium px-3.5 py-2 rounded-md transition shadow-sm ml-1" title="Tarik postingan pencari kajian dari pengguna Threads lain">
-                    <span>🌐</span>
-                    <span>Tarik Thread Orang Lain</span>
-                </button>
-                <button id="btn-pipeline" onclick="runPipeline()" class="inline-flex items-center gap-2 bg-emerald-700 hover:bg-emerald-800 text-white text-sm font-medium px-4 py-2 rounded-md transition shadow-sm">
+                                <button id="btn-pipeline" onclick="runPipeline()" class="inline-flex items-center gap-2 bg-emerald-700 hover:bg-emerald-800 text-white text-sm font-medium px-4 py-2 rounded-md transition shadow-sm">
                     <span id="pipeline-icon">🔄</span>
                     <span id="pipeline-text">Jalankan Pipeline</span>
                 </button>
@@ -557,7 +513,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <p class="text-xs text-slate-500 mb-3">Tarik dari Threads, atau tempel hasil scrape eksternal (format JSON: daftar {author, text, url, created_at}).</p>
                     <div class="flex flex-wrap gap-2 mb-3">
                         <button onclick="runPipeline()" class="text-xs font-semibold px-3 py-1.5 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white transition">🔄 Tarik dari Threads</button>
-                        <button onclick="pullPublicThreads()" class="text-xs font-semibold px-3 py-1.5 rounded-md bg-slate-800 hover:bg-slate-900 text-white transition">🌐 Thread Orang Lain</button>
+                        
                     </div>
                     <textarea id="import-json" rows="4" class="w-full text-xs font-mono p-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-emerald-600 focus:outline-none" placeholder='[{"author":"namaakun","text":"kajian sunnah di bandung dimana ya?","url":"https://www.threads.com/@akun/post/xxx","created_at":"2026-10-14T08:00:00+00:00"}]'></textarea>
                     <button id="btn-import" onclick="importScrape()" class="mt-2 w-full text-xs font-semibold px-3 py-2 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white transition">⬆️ Import Hasil Scrape</button>
@@ -1309,8 +1265,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                                 <button onclick="reclassifyAll(1)" class="text-xs px-3.5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded font-medium transition shadow-xs">
                                     ⚡ Masukkan Semua ke Antrean (Ambang Batas 1)
                                 </button>
-                                <button onclick="pullPublicThreads()" class="text-xs px-3.5 py-2 bg-slate-700 hover:bg-slate-800 text-white rounded font-medium transition shadow-xs">
-                                    🌐 Tarik Thread Orang Lain
+                                <button onclick="runPipeline()" class="text-xs px-3.5 py-2 bg-slate-700 hover:bg-slate-800 text-white rounded font-medium transition shadow-xs">
+                                    🔄 Tarik dari Threads
                                 </button>
                             </div>
                         `;
@@ -1321,8 +1277,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                             <p class="text-xs text-slate-500 max-w-md mx-auto mt-1 mb-4">
                                 Tidak ada postingan yang menunggu tinjauan saat ini.
                             </p>
-                            <button onclick="pullPublicThreads()" class="text-xs px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded font-medium transition shadow-xs">
-                                🌐 Tarik Postingan Orang Lain (Pencari Kajian)
+                            <button onclick="runPipeline()" class="text-xs px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded font-medium transition shadow-xs">
+                                🔄 Tarik dari Threads
                             </button>
                         `;
                     }
@@ -1642,18 +1598,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             }
         }
 
-        async function clearMockData() {
-            if (!confirm('Hapus seluruh data simulasi (mock) dari antrean agar hanya menampilkan thread asli?')) return;
-            try {
-                const res = await authFetch('/api/clear-mock', { method: 'POST' });
-                const data = await res.json();
-                showToast('Data dummy (mock) berhasil dibersihkan!');
-                fetchStats();
-                switchTab('review');
-            } catch (e) {
-                showToast('Gagal membersihkan data mock');
-            }
-        }
 
         async function wipeDatabase() {
             if (!confirm('PERINGATAN: Apakah Anda yakin ingin MENGHAPUS SEMUA data post dan draf di database? Seluruh metrik statistik akan kembali menjadi 0.')) return;
@@ -1669,18 +1613,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             }
         }
 
-        async function seedFreshSamples() {
-            showToast('Menghubungi AI Gemini untuk menganalisis 3 thread baru...');
-            try {
-                const res = await authFetch('/api/seed-fresh-samples', { method: 'POST' });
-                const data = await res.json();
-                showToast(`Sukses: ${data.added} thread baru berhasil dianalisis AI Gemini dan masuk antrean!`);
-                fetchStats();
-                switchTab('review');
-            } catch (e) {
-                showToast('Gagal memuat thread baru');
-            }
-        }
 
         function openAddModal() {
             document.getElementById('modal-add').classList.remove('hidden');
@@ -1727,18 +1659,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             }
         }
 
-        async function pullPublicThreads() {
-            showToast('Menarik postingan pengguna lain yang sedang mencari info kajian...');
-            try {
-                const res = await authFetch('/api/pull-public-threads', { method: 'POST' });
-                const data = await res.json();
-                showToast(`Berhasil! ${data.inserted} post orang lain ditarik dan ${data.drafted} draf balasan disiapkan.`);
-                fetchStats();
-                switchTab('review');
-            } catch (e) {
-                showToast('Gagal menarik postingan orang lain');
-            }
-        }
 
         async function runPipeline() {
             const btn = document.getElementById('btn-pipeline');

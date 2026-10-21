@@ -54,3 +54,34 @@ AI_MODEL=claude-3-5-sonnet-20241022
    .venv/Scripts/python -m streamlit run dashboard.py
    ```
    Buka peramban di alamat `http://localhost:8501`.
+
+## Audit 2026-10-22 — penghapusan data karangan & hardcode
+
+Temuan utama: dashboard terus menampilkan postingan "mockup" karena
+`fetch_threads.run_fetch()` otomatis memasukkan postingan karangan
+(`CURATED_PUBLIC_THREADS`) setiap kali token Threads kosong atau API
+mengembalikan 0 hasil. Perbaikan:
+
+- `fetch_threads.py`: seluruh data contoh/karangan (`MOCK_SAMPLE_POSTS`,
+  `CURATED_PUBLIC_THREADS`, flag `--mock`) DIHAPUS. Tanpa token / API kosong
+  = 0 postingan. Username akun sendiri tidak lagi di-hardcode — dari env
+  `OWN_THREADS_USERNAME` dan endpoint `/me`.
+- `api/index.py`: endpoint `/api/seed-fresh-samples`,
+  `/api/pull-public-threads`, `/api/clear-mock` beserta tombol UI-nya
+  DIHAPUS. URL Meta di test-calls kini dari konfigurasi, bukan hardcode.
+- Seed `data/leads_seed.json` adalah leads ASLI hasil scrape (bukan mock),
+  dimuat SEKALI; flag settings `seed_v1_done` mencegahnya bangkit lagi
+  setelah database dikosongkan.
+- `config.py`: `DB_PATH` bisa dioverride via env di semua lingkungan;
+  logika menyalin `data.db` terbundel dari repo DIHAPUS.
+- `generate_draft.py`: fallback tanpa AI kini JUJUR berlabel
+  "FALLBACK TANPA AI" (dulu menyamar sebagai hasil validasi AI).
+- Ambang skor disamakan: default 2 di kode, `.env.example`, dan API.
+
+Sumber data yang sah sekarang hanya: Threads API resmi, `/api/import-posts`
+(hasil scrape nyata), input manual admin, dan seed leads asli (sekali).
+
+Catatan persistensi: di Vercel, SQLite berada di `/tmp` (ephemeral per
+instance) — data review bisa hilang saat instance berganti/deploy. Untuk
+persistensi sejati arahkan env `DB_PATH` ke volume persisten atau migrasi
+ke database eksternal.

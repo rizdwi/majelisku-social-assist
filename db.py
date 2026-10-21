@@ -181,14 +181,6 @@ def reset_all_drafts_to_pending(db_path: Optional[str] = None) -> int:
         conn.commit()
         return cursor.rowcount
 
-def clear_mock_posts(db_path: Optional[str] = None) -> int:
-    with get_db(db_path) as conn:
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM drafts WHERE post_id LIKE '%mock%'")
-        cursor.execute("DELETE FROM raw_posts WHERE post_id LIKE '%mock%'")
-        conn.commit()
-        return cursor.rowcount
-
 def wipe_all_database_posts(db_path: Optional[str] = None) -> int:
     with get_db(db_path) as conn:
         cursor = conn.cursor()
