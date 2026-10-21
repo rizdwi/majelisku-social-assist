@@ -135,5 +135,5 @@ BOOSTERS = [
 ]
 
 EXCLUDE_PATTERNS = [
-    "wkwk", ":)", "doang gak action", "cuma teori", "jual", "diskon", "promo", "affiliate"
+    "wkwk", ":)", "doang gak action", "cuma teori", "jual", "diskon", "promo", "affiliate", "majelisku.web.id", "majelisku"
 ]

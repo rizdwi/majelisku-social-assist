@@ -44,7 +44,7 @@ from db import (
     force_candidate_and_draft,
     reclassify_all_raw_posts
 )
-from fetch_threads import run_fetch
+from fetch_threads import run_fetch, CURATED_PUBLIC_THREADS
 from classifier import classify_pending_posts
 from generate_draft import process_candidates
 from credentials_checker import validate_threads_credentials, validate_ai_credentials
@@ -321,6 +321,19 @@ def api_seed_fresh_samples():
     drafted = process_candidates()
     return {"status": "ok", "added": len(samples), "classified": classified, "drafted": drafted, "stats": get_stats()}
 
+@app.post("/api/pull-public-threads")
+def api_pull_public_threads():
+    inserted = save_raw_posts(CURATED_PUBLIC_THREADS)
+    classified = classify_pending_posts()
+    drafted = process_candidates()
+    return {
+        "status": "ok",
+        "inserted": inserted,
+        "classified": classified,
+        "drafted": drafted,
+        "stats": get_stats()
+    }
+
 @app.post("/api/pipeline")
 def api_pipeline():
     new_posts = run_fetch()
@@ -417,7 +430,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <span id="status-pill-ai" class="text-xs px-2.5 py-1 rounded border font-medium bg-slate-100 text-slate-600 border-slate-200">
                     AI: Memeriksa...
                 </span>
-                <button id="btn-pipeline" onclick="runPipeline()" class="inline-flex items-center gap-2 bg-emerald-700 hover:bg-emerald-800 text-white text-sm font-medium px-4 py-2 rounded-md transition shadow-sm ml-1">
+                <button onclick="pullPublicThreads()" class="inline-flex items-center gap-1.5 bg-slate-800 hover:bg-slate-900 text-white text-sm font-medium px-3.5 py-2 rounded-md transition shadow-sm ml-1" title="Tarik postingan pencari kajian dari pengguna Threads lain">
+                    <span>🌐</span>
+                    <span>Tarik Thread Orang Lain</span>
+                </button>
+                <button id="btn-pipeline" onclick="runPipeline()" class="inline-flex items-center gap-2 bg-emerald-700 hover:bg-emerald-800 text-white text-sm font-medium px-4 py-2 rounded-md transition shadow-sm">
                     <span id="pipeline-icon">🔄</span>
                     <span id="pipeline-text">Jalankan Pipeline</span>
                 </button>
@@ -1174,7 +1191,21 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                                 <button onclick="reclassifyAll(1)" class="text-xs px-3.5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded font-medium transition shadow-xs">
                                     ⚡ Masukkan Semua ke Antrean (Ambang Batas 1)
                                 </button>
+                                <button onclick="pullPublicThreads()" class="text-xs px-3.5 py-2 bg-slate-700 hover:bg-slate-800 text-white rounded font-medium transition shadow-xs">
+                                    🌐 Tarik Thread Orang Lain
+                                </button>
                             </div>
+                        `;
+                    } else {
+                        emptyEl.innerHTML = `
+                            <div class="text-3xl mb-2">📬</div>
+                            <h3 class="text-base font-bold text-slate-800">Tidak ada antrean review</h3>
+                            <p class="text-xs text-slate-500 max-w-md mx-auto mt-1 mb-4">
+                                Tidak ada postingan yang menunggu tinjauan saat ini.
+                            </p>
+                            <button onclick="pullPublicThreads()" class="text-xs px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded font-medium transition shadow-xs">
+                                🌐 Tarik Postingan Orang Lain (Pencari Kajian)
+                            </button>
                         `;
                     }
                     return;
@@ -1575,6 +1606,19 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             } finally {
                 btn.disabled = false;
                 btn.innerText = 'Proses dengan AI';
+            }
+        }
+
+        async function pullPublicThreads() {
+            showToast('Menarik postingan pengguna lain yang sedang mencari info kajian...');
+            try {
+                const res = await authFetch('/api/pull-public-threads', { method: 'POST' });
+                const data = await res.json();
+                showToast(`Berhasil! ${data.inserted} post orang lain ditarik dan ${data.drafted} draf balasan disiapkan.`);
+                fetchStats();
+                switchTab('review');
+            } catch (e) {
+                showToast('Gagal menarik postingan orang lain');
             }
         }
 
