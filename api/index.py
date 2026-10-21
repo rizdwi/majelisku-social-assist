@@ -33,6 +33,7 @@ from db import (
     get_skipped_queue,
     reset_draft_to_pending,
     reset_all_drafts_to_pending,
+    clear_mock_posts,
     update_draft_review,
     get_stats,
     get_setting
@@ -156,6 +157,11 @@ def api_reset_queue(req: Optional[ResetQueueRequest] = None):
         reset_all_drafts_to_pending()
     return {"status": "ok", "stats": get_stats()}
 
+@app.post("/api/clear-mock")
+def api_clear_mock():
+    clear_mock_posts()
+    return {"status": "ok", "stats": get_stats()}
+
 @app.post("/api/add-thread")
 def api_add_thread(req: AddThreadRequest):
     if not req.text.strip():
@@ -181,23 +187,23 @@ def api_seed_fresh_samples():
     samples = [
         {
             "post_id": f"live_kajian_{uuid.uuid4().hex[:6]}",
-            "author": "salwa_jakarta",
+            "author": "kajian_jaksel",
             "text": "Bismillah, ada yang punya info rekomendasi kajian sunnah rutin di Jakarta Selatan (sekitar Blok M atau Senopati) untuk akhwat pemula? Mau mulai ikut ngaji offline lagi.",
-            "url": "https://www.threads.net/@salwa_jakarta",
+            "url": "https://www.threads.net/search?q=kajian+sunnah+jakarta+selatan",
             "created_at": now_str
         },
         {
             "post_id": f"live_kajian_{uuid.uuid4().hex[:6]}",
-            "author": "rifqi_tangerang",
+            "author": "kajian_tangerang",
             "text": "Info tempat ngaji / majelis taklim di BSD Serpong yang rutin bahas kitab aqidah shahihah dong agan-agan, jadwalnya dimana ya?",
-            "url": "https://www.threads.net/@rifqi_tangerang",
+            "url": "https://www.threads.net/search?q=kajian+sunnah+bsd+tangerang",
             "created_at": now_str
         },
         {
             "post_id": f"live_kajian_{uuid.uuid4().hex[:6]}",
-            "author": "hamba_allah_bdg",
+            "author": "kajian_bandung",
             "text": "Kira-kira sabtu atau ahad besok ada info jadwal kajian sunnah di daerah Bandung kota gak ya? Mau ajak keluarga ngaji bareng.",
-            "url": "https://www.threads.net/@hamba_allah_bdg",
+            "url": "https://www.threads.net/search?q=kajian+sunnah+bandung",
             "created_at": now_str
         }
     ]
@@ -347,6 +353,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 </button>
                 <button onclick="resetAllQueue()" class="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded border border-slate-300 bg-white text-slate-600 hover:bg-slate-100 transition">
                     <span>🔄</span> Reset Semua ke Antrean
+                </button>
+                <button onclick="clearMockData()" class="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 transition shadow-sm">
+                    <span>🧹</span> Hapus Data Mock
                 </button>
             </div>
         </div>
@@ -1219,6 +1228,19 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 switchTab('review');
             } catch (e) {
                 showToast('Gagal mereset antrean');
+            }
+        }
+
+        async function clearMockData() {
+            if (!confirm('Hapus seluruh data simulasi (mock) dari antrean agar hanya menampilkan thread asli?')) return;
+            try {
+                const res = await authFetch('/api/clear-mock', { method: 'POST' });
+                const data = await res.json();
+                showToast('Data dummy (mock) berhasil dibersihkan!');
+                fetchStats();
+                switchTab('review');
+            } catch (e) {
+                showToast('Gagal membersihkan data mock');
             }
         }
 
