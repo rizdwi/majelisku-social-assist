@@ -6,54 +6,35 @@ Sistem pendukung tim media sosial Majelisku (majelisku.web.id) untuk mendeteksi 
 
 1. Human-in-the-loop: Tidak ada auto-posting. Semua balasan wajib melalui persetujuan admin manusia.
 2. Relevansi ketat: Rekomendasi Majelisku hanya disertakan jika penanya memang mencari informasi kajian.
-3. Kepatuhan platform: Menggunakan Threads API resmi milik pengguna.
+3. Tanpa kredensial: App ini TIDAK memakai API resmi Threads dan TIDAK memakai layanan AI eksternal. Tidak ada token/kunci apa pun yang perlu diisi — postingan masuk dari sapuan agen (pencarian sosial, pola yang sama dengan majelisku.web.id).
 
-## Pipeline (3 Langkah Mudah)
+## Alur Kerja
 
-1. **Ambil** — Tarik postingan pencari kajian dari Threads API (tombol "Tarik dari Threads" / "Thread Orang Lain"), **atau import hasil scrape eksternal** lewat panel Pipeline di dashboard web: tempel JSON berisi daftar postingan, formatnya:
+1. **Masuk** — Agen menyapu Threads tiap 15 menit (frasa pencari kajian, umum + per-kota) lalu mengimport hasilnya lewat `POST /api/import-posts` dengan body `{"posts": [...]}`:
    ```json
    [{"author": "namaakun", "text": "kajian sunnah di bandung dimana ya?", "url": "https://www.threads.com/@akun/post/xxx", "created_at": "2026-10-14T08:00:00+00:00"}]
    ```
-   Field `text` wajib; `post_id` opsional (dibuat otomatis dari URL+teks bila kosong). Endpoint yang sama tersedia sebagai API: `POST /api/import-posts` dengan body `{"posts": [...]}`.
-2. **Saring & Draft (otomatis)** — Setiap selesai ambil/import, classifier menyaring postingan (skor >= ambang = kandidat) dan AI langsung menyusun draft balasan bridging ke Majelisku.web.id. Tidak ada tombol terpisah.
-3. **Review** — Admin memeriksa draft di Antrean Review, menyetujui/melewati, lalu menempel balasan ke postingan asli. Tidak ada auto-posting.
+   Field `text` wajib; `post_id` opsional (dibuat otomatis dari URL+teks bila kosong). Import manual juga tersedia di dashboard (tombol "Import Manual", satu JSON per baris).
+2. **Saring & Draft (otomatis)** — Setiap import, classifier kata kunci menyaring postingan (skor >= ambang = kandidat) dan mesin lokal `generate_draft.py` menyusun draft personal berbasis sinyal teks postingan (maksud/kota/emosi TS) dengan bridging ke Majelisku.web.id. Tombol "Proses Antrean" menjalankan tahap ini untuk postingan yang masih pending.
+3. **Review** — Admin memeriksa draft di Antrean Review (tautan "Lihat di Threads" membuka postingan aslinya untuk verifikasi sumber), mengedit bila perlu, menyetujui, menyalin balasan, menempelnya manual ke postingan asli, lalu menandai "Sudah Dibalas". Tidak ada auto-posting.
 
-Catatan: berkas `data/leads_seed.json` berisi contoh leads asli hasil scrape; isinya dimuat otomatis satu kali saat basis data masih kosong (mis. cold start serverless).
+Catatan: berkas `data/leads_seed.json` berisi leads asli hasil scrape; isinya dimuat otomatis satu kali saat basis data masih kosong (mis. cold start serverless).
 
 ## Struktur Berkas
 
-- `config.py`: Konfigurasi kata kunci, bobot skor filter, dan pembacaan berkas .env.
+- `config.py`: Path database, ambang skor, dan daftar kata kunci classifier.
 - `db.py`: Manajemen basis data SQLite (raw_posts dan drafts).
-- `fetch_threads.py`: Pengambil postingan dari Threads API resmi.
 - `classifier.py`: Filter scoring berbasis aksi, objek, booster, dan pola pengecualian.
-- `generate_draft.py`: Pemanggil model AI untuk validasi relevansi dan pembuatan draft balasan.
-- `dashboard.py`: Antarmuka web lokal berbasis Streamlit untuk proses review manual.
+- `generate_draft.py`: Mesin lokal penyusun draft personal dari sinyal teks (tanpa AI eksternal).
+- `api/index.py`: Aplikasi FastAPI + dashboard review (satu-satunya antarmuka).
 - `test_pipeline.py`: Skrip pengujian otomatis mandiri untuk memverifikasi logika alur kerja.
-- `run.bat`: Peluncur sekali klik untuk menjalankan dasbor pada Windows.
-
-## Cara Mengisi Kredensial
-
-Salin berkas `.env.example` ke `.env` lalu lengkapi isinya:
-
-```env
-THREADS_ACCESS_TOKEN=kredensial_token_threads_anda
-THREADS_USER_ID=me
-THREADS_API_BASE_URL=https://graph.threads.net/v1.0
-
-AI_API_KEY=kunci_api_ai_anda
-AI_MODEL=claude-3-5-sonnet-20241022
-```
 
 ## Cara Menjalankan
 
-1. Menggunakan berkas batch:
-   Klik dua kali pada berkas `run.bat`.
-
-2. Menggunakan terminal:
-   ```bash
-   .venv/Scripts/python -m streamlit run dashboard.py
-   ```
-   Buka peramban di alamat `http://localhost:8501`.
+```bash
+python -m uvicorn api.index:app --port 8000
+```
+Buka peramban di alamat `http://localhost:8000`. Di produksi, Vercel mengarahkan semua rute ke `api/index.py`.
 
 ## Audit 2026-10-22 — penghapusan data karangan & hardcode
 
@@ -85,3 +66,23 @@ Catatan persistensi: di Vercel, SQLite berada di `/tmp` (ephemeral per
 instance) — data review bisa hilang saat instance berganti/deploy. Untuk
 persistensi sejati arahkan env `DB_PATH` ke volume persisten atau migrasi
 ke database eksternal.
+
+## Rombak 2026-10-22 — dashboard review murni, tanpa kredensial
+
+Perintah user: seleksi dirombak meniru pola majelisku.web.id (sapuan agen,
+tanpa mengisi kredensial Threads) dan seluruh tombol/kredensial lama dihapus.
+
+- DIHAPUS: `fetch_threads.py` (API Threads resmi), `credentials_checker.py`,
+  `dashboard.py` (Streamlit lama), `run.bat`; endpoint `/api/settings`,
+  `/api/validate-key`, `/api/trigger-meta-test-calls`, `/api/add-thread`,
+  `/api/reset-queue`, `/api/wipe-database`, `/api/raw-posts`,
+  `/api/force-candidate`, `/api/reclassify`; middleware penelan kredensial
+  dari header; seluruh panel Pengaturan & input token/kunci di UI.
+- `generate_draft.py`: cabang AI eksternal dibuang — mesin lokal berbasis
+  sinyal teks menjadi satu-satunya penyusun draft.
+- `config.py`: tinggal path DB, ambang skor, dan kata kunci classifier.
+- UI baru ringkas: statistik, panel Postingan Masuk (Proses Antrean +
+  Import Manual), Antrean Review, Disetujui, Dilewati. Tiap kartu punya
+  tautan profil penulis + tombol "Lihat di Threads" ke postingan asli.
+- Fix: antrean Disetujui kini juga memuat status 'posted' (sebelumnya item
+  yang ditandai sudah dibalas hilang dari semua daftar).

@@ -1,61 +1,27 @@
+"""Mesin penyusun draft balasan — LOKAL, tanpa AI eksternal, tanpa kredensial.
+
+ROMBAK 2026-10-22 (perintah user): seluruh jalur AI eksternal (Gemini/
+Anthropic/OpenAI) dan kredensialnya DIHAPUS dari app ini. Draft disusun
+oleh mesin lokal berbasis sinyal teks postingan TS:
+
+1. BACA TS: petakan maksud (kota yang dicari, khusus akhwat/pemula/anak,
+   cari teman berangkat) dan emosi/nada (antusias, ragu/malu, santai-gaul,
+   netral) dari kata-kata di postingannya sendiri — tidak mengarang konteks.
+2. SUSUN draft yang selaras bacaan itu: kalimat empati sesuai sinyal
+   terkuatnya, bridging Majelisku.web.id menyebut kota TS, penutup bervariasi.
+   Varian dipilih deterministik dari hash teks — postingan yang sama selalu
+   mendapat draft yang sama, antar-postingan berbeda.
+3. Reasoning yang tersimpan JUJUR menyebut bacaan sinyalnya agar reviewer
+   bisa menilai sekilas sebelum menyetujui.
+"""
 import hashlib
-import json
 import logging
-import re
 from typing import Dict, Any, Optional
-import requests
-from config import (
-    get_ai_api_key,
-    get_ai_model,
-    get_ai_base_url,
-    DB_PATH
-)
+
+from config import DB_PATH
 from db import get_candidates_without_draft, save_draft
 
 logger = logging.getLogger(__name__)
-
-SYSTEM_PROMPT = """Kamu adalah asisten seleksi dan penyusun draft balasan untuk Majelisku (majelisku.web.id).
-
-Tugasmu memiliki TIGA tahap dalam satu respons:
-
-Tahap 1: BACA TS (Thread Starter) DULU — jangan langsung menulis.
-Petakan dari postingan TS:
-- maksud: apa yang sebenarnya sedang ia cari/tanyakan (jadwal? lokasi terdekat? teman berangkat? komunitas? kajian khusus akhwat/anak/pemula?)
-- tujuan: hasil akhir yang ia harapkan (mis. bisa berangkat pekan ini, tidak berangkat sendirian lagi, mulai rutin ngaji)
-- emosi & nada: antusias/semangat, bingung, ragu/malu-malu, kesepian (berangkat sendiri terus), santai-gaul, atau serius-formal
-- konteks spesifik: kota/daerah yang disebut, kondisinya (baru pindah, baru hijrah, sendirian, untuk anak, dsb.)
-Isi ketiganya ringkas di field "ts_read". Baca dari teksnya — JANGAN mengarang konteks yang tidak ada di postingan.
-
-Tahap 2: Validasi Relevansi
-- is_relevant = true jika TS secara eksplisit mencari info/rekomendasi kajian/tempat ngaji.
-- is_relevant = false jika sarkasme, bercanda, debat abstrak, atau tidak ada niat mencari kajian. Jika ragu, pilih false.
-
-Tahap 3: Penyusunan Draft Balasan (HANYA jika is_relevant = true)
-Susun draft yang SELARAS dengan hasil bacaanmu di Tahap 1:
-1. CERMINKAN emosi TS: ia antusias -> balas dengan energi yang sama; ia ragu/malu -> balas menenangkan dan menyambut; ia kesepian -> tekankan sisi kebersamaan/komunitas; ia santai-gaul -> balas santai juga (tetap sopan). Sapaan mengikuti gaya TS (ia pakai "kak", balas "kak"; petunjuk akhwat -> "ukhti" boleh; tanpa petunjuk -> sapaan netral hangat).
-2. JAWAB maksudnya secara SPESIFIK: sebut ulang kota/daerah atau kondisi yang TS sebut (mis. "di Bandung tengah kota", "yang khusus akhwat", "buat yang baru mulai") supaya terasa dibaca, bukan dibalas massal. Jawab dulu substansinya, promosi belakangan.
-3. Bridging ke Majelisku.web.id tetap natural dan BUKAN hard-sell, dan posisikan bervariasi (kadang di tengah, kadang di akhir) — jangan selalu kalimat yang sama. Kaitkan dengan kebutuhannya (mis. filter terdekat dari lokasinya, jadwal pekan ini).
-4. 2 sampai 4 kalimat pendek khas Threads. DILARANG memakai pola pembuka yang sama untuk semua orang dan DILARANG mengarang pengalaman pribadi palsu (misal "dulu aku juga bingung...").
-5. Jika is_relevant = false, isi draft_reply dengan string kosong dan include_bridging = false.
-
-Output HARUS berupa JSON murni dengan format:
-{
-  "is_relevant": true/false,
-  "ts_read": {"maksud": "...", "tujuan": "...", "emosi": "..."},
-  "reasoning": "alasan singkat 1 kalimat dalam bahasa Indonesia",
-  "draft_reply": "teks balasan jika relevan, atau kosong jika tidak relevan",
-  "include_bridging": true/false
-}
-"""
-
-# ---------------------------------------------------------------------------
-# Fallback personal (dipakai bila AI tidak tersedia / error).
-# Perintah user 2026-10-22: draft TIDAK BOLEH generik & sama semua — fallback
-# pun wajib membaca sinyal maksud/kondisi/emosi dari teks TS dan menyusun
-# balasan yang selaras, dengan variasi antar-postingan (dipilih deterministik
-# dari hash teks agar postingan yang sama selalu mendapat draft yang sama).
-# Reasoning tetap JUJUR berlabel FALLBACK TANPA AI (audit 2026-10-22).
-# ---------------------------------------------------------------------------
 
 _CITY_WORDS = [
     ("jakarta", "Jakarta"), ("bandung", "Bandung"), ("surabaya", "Surabaya"),
@@ -127,7 +93,7 @@ def _pick(variants, seed_text: str, salt: str) -> str:
 
 
 def read_ts_signals(post_text: str) -> Dict[str, Any]:
-    """Baca sinyal maksud/kondisi/emosi dari teks TS (heuristik fallback)."""
+    """Baca sinyal maksud/kondisi/emosi dari teks TS."""
     low = f" {post_text.lower()} "
     city = None
     for kw, display in _CITY_WORDS:
@@ -163,8 +129,8 @@ def read_ts_signals(post_text: str) -> Dict[str, Any]:
     return {"city": city, "signals": signals, "emosi": emosi, "maksud": maksud}
 
 
-def fallback_draft(post_text: str, reason: str) -> Dict[str, Any]:
-    """Draft personal berbasis sinyal teks — BUKAN satu template untuk semua."""
+def compose_draft(post_text: str) -> Dict[str, Any]:
+    """Susun draft personal dari sinyal teks — bukan satu template untuk semua."""
     sig = read_ts_signals(post_text)
     top = sig["signals"][0] if sig["signals"] else "default"
     open_line = _pick(_EMPATHY_OPEN.get(top, _EMPATHY_OPEN["default"]), post_text, "open")
@@ -174,147 +140,13 @@ def fallback_draft(post_text: str, reason: str) -> Dict[str, Any]:
     return {
         "is_relevant": True,
         "reasoning": (
-            f"FALLBACK TANPA AI: {reason} — draft disusun dari sinyal teks "
-            f"(maksud: {sig['maksud']}; emosi: {sig['emosi']}), relevansi BELUM "
-            f"divalidasi AI. Wajib dicek manual."
+            f"Mesin lokal — draft disusun dari sinyal teks postingan "
+            f"(maksud: {sig['maksud']}; emosi: {sig['emosi']}). "
+            f"Tinjau isi & sumbernya sebelum membalas."
         ),
         "draft_reply": f"{open_line} {bridge} {closing}",
         "include_bridging": True,
     }
-
-
-def extract_json_from_text(text: str) -> Optional[Dict[str, Any]]:
-    # Bersihkan markdown codeblock jika ada
-    cleaned = re.sub(r"^```(?:json)?\s*", "", text.strip())
-    cleaned = re.sub(r"\s*```$", "", cleaned)
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        # Coba cari pola {...} di dalam teks
-        match = re.search(r"\{.*\}", cleaned, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group(0))
-            except json.JSONDecodeError:
-                pass
-    return None
-
-
-def call_ai_api(post_text: str) -> Dict[str, Any]:
-    api_key = get_ai_api_key()
-    model = get_ai_model()
-    base_url = get_ai_base_url()
-
-    # Jika API key belum diisi, gunakan fallback personal berbasis sinyal teks.
-    if not api_key:
-        return fallback_draft(post_text, "kredensial AI belum diisi — draft personal dari pola teks, bukan template tunggal")
-
-    # Dukungan Google Gemini API
-    if "gemini" in model.lower() or api_key.startswith("AIzaSy"):
-        gemini_model = model if "gemini" in model.lower() else "gemini-1.5-flash"
-        url = base_url or f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent?key={api_key}"
-        headers = {
-            "Content-Type": "application/json"
-        }
-        full_prompt = f"{SYSTEM_PROMPT}\n\nPostingan Threads:\n\"{post_text}\""
-        payload = {
-            "contents": [
-                {
-                    "parts": [{"text": full_prompt}]
-                }
-            ],
-            "generationConfig": {
-                # 0.85: variasi antar-draft — perintah user 2026-10-22 draft
-                # jangan generik & sama semua.
-                "temperature": 0.85,
-                "responseMimeType": "application/json"
-            }
-        }
-        try:
-            res = requests.post(url, headers=headers, json=payload, timeout=25)
-            if res.status_code == 200:
-                data = res.json()
-                raw_content = data["candidates"][0]["content"]["parts"][0]["text"]
-                parsed = extract_json_from_text(raw_content)
-                if parsed:
-                    return parsed
-            else:
-                logger.warning(f"Google Gemini HTTP {res.status_code}: {res.text}")
-        except Exception as e:
-            logger.warning(f"Panggilan Google Gemini error: {e}")
-
-        # Jangan teruskan ke Anthropic/OpenAI jika kredensial adalah Google Gemini.
-        return fallback_draft(post_text, f"panggilan Google Gemini ({gemini_model}) gagal/error — draft personal dari pola teks")
-
-    # Dukungan Anthropic API
-    if "claude" in model.lower() or api_key.startswith("sk-ant"):
-        url = base_url or "https://api.anthropic.com/v1/messages"
-        headers = {
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json"
-        }
-        payload = {
-            "model": model,
-            "max_tokens": 500,
-            "temperature": 0.85,
-            "system": SYSTEM_PROMPT,
-            "messages": [
-                {"role": "user", "content": f"Postingan Threads:\n\"{post_text}\""}
-            ]
-        }
-        res = requests.post(url, headers=headers, json=payload, timeout=25)
-        res.raise_for_status()
-        data = res.json()
-        raw_content = data["content"][0]["text"]
-        parsed = extract_json_from_text(raw_content)
-        if parsed:
-            return parsed
-
-    # Dukungan OpenAI / OpenRouter / endpoint kompatibel
-    url = base_url or "https://api.openai.com/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": model if "claude" not in model.lower() else "gpt-4o-mini",
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": f"Postingan Threads:\n\"{post_text}\""}
-        ],
-        "temperature": 0.85
-    }
-    res = requests.post(url, headers=headers, json=payload, timeout=25)
-    res.raise_for_status()
-    data = res.json()
-    raw_content = data["choices"][0]["message"]["content"]
-    parsed = extract_json_from_text(raw_content)
-    if parsed:
-        return parsed
-
-    return {
-        "is_relevant": False,
-        "reasoning": "Gagal mengurai format JSON dari respons AI",
-        "draft_reply": "",
-        "include_bridging": False
-    }
-
-
-def _reasoning_with_ts_read(result: Dict[str, Any]) -> str:
-    """Gabungkan bacaan TS (maksud/tujuan/emosi) ke reasoning agar terlihat reviewer."""
-    base = str(result.get("reasoning", "Analisis relevansi kajian sunnah"))
-    ts = result.get("ts_read") or {}
-    parts = []
-    if ts.get("maksud"):
-        parts.append(f"Maksud: {ts['maksud']}")
-    if ts.get("tujuan"):
-        parts.append(f"Tujuan: {ts['tujuan']}")
-    if ts.get("emosi"):
-        parts.append(f"Emosi: {ts['emosi']}")
-    if parts:
-        return " · ".join(parts) + f" — {base}"
-    return base
 
 
 def process_candidates(db_path: Optional[str] = None) -> int:
@@ -322,18 +154,13 @@ def process_candidates(db_path: Optional[str] = None) -> int:
     processed_count = 0
 
     for cand in candidates:
-        try:
-            result = call_ai_api(cand["text"])
-        except Exception as e:
-            logger.error(f"Gagal memproses post {cand['post_id']}: {e}")
-            result = fallback_draft(cand["text"], f"panggilan AI error ({str(e)[:60]}) — draft personal dari pola teks")
-
+        result = compose_draft(cand["text"])
         try:
             save_draft(
                 post_id=cand["post_id"],
                 is_relevant=bool(result.get("is_relevant", True)),
-                ai_reasoning=_reasoning_with_ts_read(result),
-                draft_reply=str(result.get("draft_reply") or fallback_draft(cand["text"], "AI mengembalikan draft kosong")["draft_reply"]),
+                ai_reasoning=str(result.get("reasoning", "")),
+                draft_reply=str(result.get("draft_reply") or ""),
                 include_bridging=bool(result.get("include_bridging", True)),
                 db_path=db_path or DB_PATH
             )

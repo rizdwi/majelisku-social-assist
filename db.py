@@ -142,7 +142,7 @@ def get_approved_queue(db_path: Optional[str] = None) -> List[Dict[str, Any]]:
                    d.final_reply, d.review_status, d.reviewed_at
             FROM drafts d
             JOIN raw_posts r ON d.post_id = r.post_id
-            WHERE d.review_status = 'approved'
+            WHERE d.review_status IN ('approved', 'posted')
             ORDER BY d.reviewed_at DESC
         """)
         return [dict(row) for row in cursor.fetchall()]

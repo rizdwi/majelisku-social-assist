@@ -6,14 +6,11 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 
-# Path database SQLite. AUDIT 2026-10-22: env DB_PATH selalu didahulukan di
-# semua lingkungan (dulu di Vercel di-hardcode "/tmp/data.db" dan ada logika
-# menyalin data.db terbundel dari repo — data basi/karangan lama bisa ikut
-# terbawa dan muncul lagi di dashboard; logika salin itu DIHAPUS).
-# Default Vercel tetap /tmp/data.db karena filesystem serverless read-only
-# selain /tmp. KETERBATASAN: /tmp bersifat ephemeral per instance — data
-# review tidak dijamin bertahan lintas cold start/deploy. Untuk persistensi
-# sejati, arahkan DB_PATH ke volume persisten atau migrasi ke DB eksternal.
+# Path database SQLite (audit 2026-10-22: env DB_PATH selalu didahulukan di
+# semua lingkungan). Default Vercel /tmp/data.db karena filesystem serverless
+# read-only selain /tmp. KETERBATASAN: /tmp bersifat ephemeral per instance —
+# data review tidak dijamin bertahan lintas cold start/deploy. Untuk
+# persistensi sejati, arahkan DB_PATH ke volume persisten / DB eksternal.
 if os.getenv("DB_PATH"):
     DB_PATH = os.getenv("DB_PATH")
 elif os.getenv("VERCEL"):
@@ -21,19 +18,16 @@ elif os.getenv("VERCEL"):
 else:
     DB_PATH = str(BASE_DIR / "data.db")
 
-# Konfigurasi Threads API
-THREADS_ACCESS_TOKEN = os.getenv("THREADS_ACCESS_TOKEN", "").strip()
-THREADS_USER_ID = os.getenv("THREADS_USER_ID", "me").strip()
-THREADS_API_BASE_URL = os.getenv("THREADS_API_BASE_URL", "https://graph.threads.net/v1.0").rstrip("/")
+# ROMBAK 2026-10-22 (perintah user): app ini TIDAK LAGI memakai API resmi
+# Threads maupun layanan AI eksternal — tidak ada token/kredensial apa pun
+# yang perlu diisi. Postingan masuk dari sapuan agen (pencarian sosial,
+# pola yang sama dengan majelisku.web.id) lewat /api/import-posts, lalu
+# disaring classifier kata kunci dan disusun draftnya oleh mesin lokal
+# di generate_draft.py. Semua proses berjalan tanpa kredensial.
 
-# Konfigurasi AI API
-AI_API_KEY = os.getenv("AI_API_KEY", "").strip()
-AI_MODEL = os.getenv("AI_MODEL", "claude-3-5-sonnet-20241022").strip()
-AI_BASE_URL = os.getenv("AI_BASE_URL", "").strip()
-
-# Parameter Filter & Scheduler
+# Ambang skor classifier (bisa dioverride via settings DB / env SCORE_THRESHOLD)
 SCORE_THRESHOLD = int(os.getenv("SCORE_THRESHOLD", "2"))
-FETCH_INTERVAL_HOURS = int(os.getenv("FETCH_INTERVAL_HOURS", "1"))
+
 
 def get_config_val(key: str, default: str = "") -> str:
     try:
@@ -48,68 +42,15 @@ def get_config_val(key: str, default: str = "") -> str:
         return str(env_val).strip()
     return default
 
-def get_threads_token() -> str:
-    return get_config_val("THREADS_ACCESS_TOKEN", "")
-
-def get_threads_user_id() -> str:
-    return get_config_val("THREADS_USER_ID", "me")
-
-def get_threads_api_base_url() -> str:
-    return get_config_val("THREADS_API_BASE_URL", "https://graph.threads.net/v1.0").rstrip("/")
-
-def get_ai_api_key() -> str:
-    return get_config_val("AI_API_KEY", "")
-
-def get_ai_model() -> str:
-    return get_config_val("AI_MODEL", "claude-3-5-sonnet-20241022")
-
-def get_ai_base_url() -> str:
-    return get_config_val("AI_BASE_URL", "")
 
 def get_score_threshold() -> int:
     try:
-        raw = get_config_val("SCORE_THRESHOLD", "2")
-        return int(raw)
+        return int(get_config_val("SCORE_THRESHOLD", "2"))
     except Exception:
         return 2
 
-def sync_to_env_file(settings: dict) -> None:
-    if os.getenv("VERCEL"):
-        return
-    env_path = BASE_DIR / ".env"
-    try:
-        lines = []
-        if env_path.exists():
-            with open(env_path, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-        existing_keys = set()
-        new_lines = []
-        for line in lines:
-            line_stripped = line.strip()
-            if "=" in line_stripped and not line_stripped.startswith("#"):
-                k, _ = line_stripped.split("=", 1)
-                k = k.strip()
-                if k in settings:
-                    new_lines.append(f"{k}={settings[k]}\n")
-                    existing_keys.add(k)
-                    continue
-            new_lines.append(line)
-        for k, v in settings.items():
-            if k not in existing_keys:
-                new_lines.append(f"{k}={v}\n")
-        with open(env_path, "w", encoding="utf-8") as f:
-            f.writelines(new_lines)
-    except Exception:
-        pass
 
-def save_app_settings(settings: dict) -> None:
-    from db import set_setting
-    for k, v in settings.items():
-        if v is not None:
-            set_setting(k, str(v).strip())
-    sync_to_env_file(settings)
-
-# Kata kunci pencarian Threads
+# Kata kunci pencarian (dipakai agen penyapu sebagai acuan frasa)
 KEYWORDS = [
     "kajian",
     "cari kajian",
