@@ -61,15 +61,15 @@ async def auto_hydrate_settings_middleware(request: Request, call_next):
     ai_base_url_h = request.headers.get("x-ai-base-url")
 
     updates = {}
-    if threads_h and not get_threads_token():
+    if threads_h and threads_h.strip() != get_threads_token():
         updates["THREADS_ACCESS_TOKEN"] = threads_h.strip()
-    if threads_uid_h and not get_threads_user_id():
+    if threads_uid_h and threads_uid_h.strip() != get_threads_user_id():
         updates["THREADS_USER_ID"] = threads_uid_h.strip()
-    if ai_key_h and not get_ai_api_key():
+    if ai_key_h and ai_key_h.strip() != get_ai_api_key():
         updates["AI_API_KEY"] = ai_key_h.strip()
-    if ai_model_h and not get_setting("AI_MODEL"):
+    if ai_model_h and ai_model_h.strip() != (get_setting("AI_MODEL") or ""):
         updates["AI_MODEL"] = ai_model_h.strip()
-    if ai_base_url_h and not get_ai_base_url():
+    if ai_base_url_h and ai_base_url_h.strip() != get_ai_base_url():
         updates["AI_BASE_URL"] = ai_base_url_h.strip()
 
     if updates:
@@ -1392,15 +1392,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             try {
                 const res = await authFetch('/api/pipeline', { method: 'POST' });
                 const data = await res.json();
-                if (data.new_posts === 0) {
-                    showToast('Threads API: 0 post baru (fitur search publik butuh persetujuan Meta). Gunakan tombol "Muat 3 Thread Baru" untuk uji.');
+                if (data.new_posts === 0 && data.stats && data.stats.review_queue === 0) {
+                    showToast('Threads API: 0 post baru ditemukan. Pastikan token Threads valid.');
+                } else if (data.new_posts === 0 && data.stats && data.stats.review_queue > 0) {
+                    showToast(`Pipeline selesai: ${data.stats.review_queue} post siap ditinjau di antrean.`);
                 } else {
-                    showToast(`Selesai: ${data.new_posts} post baru, ${data.classified} filter, ${data.drafted} draft.`);
+                    showToast(`Selesai: ${data.new_posts} post ditarik, ${data.classified} disaring, ${data.drafted} draf dibuat.`);
                 }
                 fetchStats();
-                if (currentTab === 'review') loadQueue();
-                if (currentTab === 'approved') loadApproved();
-                if (currentTab === 'skipped') loadSkipped();
+                switchTab('review');
             } catch (e) {
                 showToast('Terjadi kesalahan saat menjalankan pipeline');
             } finally {

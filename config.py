@@ -109,6 +109,7 @@ def save_app_settings(settings: dict) -> None:
 
 # Kata kunci pencarian Threads
 KEYWORDS = [
+    "kajian",
     "cari kajian",
     "nyari kajian",
     "info kajian",

@@ -65,7 +65,7 @@ def fetch_from_threads_api() -> List[Dict[str, Any]]:
     collected_posts: List[Dict[str, Any]] = []
     headers = {"Authorization": f"Bearer {token}"}
 
-    # Coba endpoint pencarian atau feed resmi Threads Graph API
+    # Coba endpoint pencarian resmi Threads Graph API (keyword_search)
     for kw in KEYWORDS:
         try:
             # Endpoint standar pencarian Threads Graph API (keyword_search)
@@ -73,9 +73,10 @@ def fetch_from_threads_api() -> List[Dict[str, Any]]:
             params = {
                 "q": kw,
                 "search_type": "RECENT",
-                "fields": "id,text,permalink,timestamp,username"
+                "fields": "id,text,permalink,timestamp,username",
+                "access_token": token
             }
-            res = requests.get(url, headers=headers, params=params, timeout=15)
+            res = requests.get(url, params=params, timeout=15)
             if res.status_code == 200:
                 data = res.json().get("data", [])
                 for item in data:
@@ -91,26 +92,35 @@ def fetch_from_threads_api() -> List[Dict[str, Any]]:
         except Exception as e:
             logger.error(f"Error memanggil Threads API untuk kata kunci '{kw}': {e}")
 
-    # Fallback endpoint user threads jika query search memerlukan approval khusus
-    if not collected_posts:
-        try:
-            url = f"{api_base}/{user_id}/threads"
-            params = {"fields": "id,text,permalink,timestamp,username"}
-            res = requests.get(url, headers=headers, params=params, timeout=15)
-            if res.status_code == 200:
-                data = res.json().get("data", [])
-                for item in data:
-                    collected_posts.append({
-                        "post_id": str(item.get("id")),
-                        "author": item.get("username", "threads_user"),
-                        "text": item.get("text", ""),
-                        "url": item.get("permalink", f"https://www.threads.net/post/{item.get('id')}"),
-                        "created_at": item.get("timestamp", datetime.now(timezone.utc).isoformat())
-                    })
-        except Exception as e:
-            logger.error(f"Error mengambil user threads: {e}")
+    # Fallback/tambahkan dari feed threads tester jika ada
+    try:
+        target_user = user_id if user_id and user_id != "me" else "me"
+        url = f"{api_base}/{target_user}/threads"
+        params = {
+            "fields": "id,text,permalink,timestamp,username",
+            "access_token": token
+        }
+        res = requests.get(url, params=params, timeout=15)
+        if res.status_code == 200:
+            data = res.json().get("data", [])
+            for item in data:
+                collected_posts.append({
+                    "post_id": str(item.get("id")),
+                    "author": item.get("username", "threads_user"),
+                    "text": item.get("text", ""),
+                    "url": item.get("permalink", f"https://www.threads.net/post/{item.get('id')}"),
+                    "created_at": item.get("timestamp", datetime.now(timezone.utc).isoformat())
+                })
+    except Exception as e:
+        logger.error(f"Error mengambil user threads: {e}")
 
-    return collected_posts
+    # Deduplikasi berdasarkan post_id
+    unique_map = {}
+    for p in collected_posts:
+        if p["post_id"] not in unique_map:
+            unique_map[p["post_id"]] = p
+
+    return list(unique_map.values())
 
 def run_fetch(mock_mode: bool = False, db_path: Optional[str] = None) -> int:
     init_db(db_path or DB_PATH)
