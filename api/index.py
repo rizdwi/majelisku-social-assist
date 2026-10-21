@@ -220,11 +220,16 @@ def api_trigger_meta_test_calls():
     except Exception as e:
         results["threads_basic_posts"] = {"error": str(e)}
 
-    # 3. Panggilan threads_keyword_search: threads/search
+    # 3. Panggilan threads_keyword_search: keyword_search (endpoint resmi Meta)
     try:
         r3 = requests.get(
-            "https://graph.threads.net/v1.0/threads/search",
-            params={"q": "kajian", "access_token": token},
+            "https://graph.threads.net/v1.0/keyword_search",
+            params={
+                "q": "kajian",
+                "search_type": "RECENT",
+                "fields": "id,text,permalink,timestamp,username",
+                "access_token": token
+            },
             timeout=10
         )
         results["threads_keyword_search"] = {

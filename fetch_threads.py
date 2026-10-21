@@ -68,10 +68,11 @@ def fetch_from_threads_api() -> List[Dict[str, Any]]:
     # Coba endpoint pencarian atau feed resmi Threads Graph API
     for kw in KEYWORDS:
         try:
-            # Endpoint standar pencarian Threads Graph API
-            url = f"{api_base}/threads/search"
+            # Endpoint standar pencarian Threads Graph API (keyword_search)
+            url = f"{api_base}/keyword_search"
             params = {
                 "q": kw,
+                "search_type": "RECENT",
                 "fields": "id,text,permalink,timestamp,username"
             }
             res = requests.get(url, headers=headers, params=params, timeout=15)
