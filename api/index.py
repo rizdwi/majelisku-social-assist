@@ -13,7 +13,16 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 
-from config import THREADS_ACCESS_TOKEN, AI_API_KEY, AI_MODEL, SCORE_THRESHOLD
+from config import (
+    get_threads_token,
+    get_threads_user_id,
+    get_threads_api_base_url,
+    get_ai_api_key,
+    get_ai_model,
+    get_ai_base_url,
+    get_score_threshold,
+    save_app_settings
+)
 from db import (
     init_db,
     get_review_queue,
@@ -35,9 +44,21 @@ class ReviewRequest(BaseModel):
     action: str  # "approve" | "skip" | "posted"
     final_reply: Optional[str] = ""
 
+class SettingsRequest(BaseModel):
+    threads_token: Optional[str] = ""
+    threads_user_id: Optional[str] = "me"
+    ai_api_key: Optional[str] = ""
+    ai_model: Optional[str] = "claude-3-5-sonnet-20241022"
+    ai_base_url: Optional[str] = ""
+    score_threshold: Optional[int] = 3
+
 @app.get("/api/stats")
 def api_stats():
-    return get_stats()
+    res = get_stats()
+    res["threads_configured"] = bool(get_threads_token())
+    res["ai_configured"] = bool(get_ai_api_key())
+    res["ai_model"] = get_ai_model()
+    return res
 
 @app.get("/api/queue")
 def api_queue():
@@ -76,12 +97,50 @@ def api_pipeline():
     new_posts = run_fetch()
     classified = classify_pending_posts()
     drafted = process_candidates()
+    res_stats = get_stats()
+    res_stats["threads_configured"] = bool(get_threads_token())
+    res_stats["ai_configured"] = bool(get_ai_api_key())
+    res_stats["ai_model"] = get_ai_model()
     return {
         "status": "ok",
         "new_posts": new_posts,
         "classified": classified,
         "drafted": drafted,
-        "stats": get_stats()
+        "stats": res_stats
+    }
+
+@app.get("/api/settings")
+def api_get_settings():
+    return {
+        "threads_token": get_threads_token(),
+        "threads_user_id": get_threads_user_id(),
+        "ai_api_key": get_ai_api_key(),
+        "ai_model": get_ai_model(),
+        "ai_base_url": get_ai_base_url(),
+        "score_threshold": get_score_threshold()
+    }
+
+@app.post("/api/settings")
+def api_save_settings(req: SettingsRequest):
+    save_app_settings({
+        "THREADS_ACCESS_TOKEN": req.threads_token or "",
+        "THREADS_USER_ID": req.threads_user_id or "me",
+        "AI_API_KEY": req.ai_api_key or "",
+        "AI_MODEL": req.ai_model or "claude-3-5-sonnet-20241022",
+        "AI_BASE_URL": req.ai_base_url or "",
+        "SCORE_THRESHOLD": str(req.score_threshold or 3)
+    })
+    return {
+        "status": "ok",
+        "message": "Pengaturan berhasil disimpan dan langsung aktif.",
+        "settings": {
+            "threads_token": get_threads_token(),
+            "threads_user_id": get_threads_user_id(),
+            "ai_api_key": get_ai_api_key(),
+            "ai_model": get_ai_model(),
+            "ai_base_url": get_ai_base_url(),
+            "score_threshold": get_score_threshold()
+        }
     }
 
 HTML_TEMPLATE = """<!DOCTYPE html>
@@ -106,8 +165,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <p class="text-xs text-slate-500">Asisten kurasi dan balasan thread kajian sunnah</p>
                 </div>
             </div>
-            <div class="flex items-center gap-2">
-                <button id="btn-pipeline" onclick="runPipeline()" class="inline-flex items-center gap-2 bg-emerald-700 hover:bg-emerald-800 text-white text-sm font-medium px-4 py-2 rounded-md transition shadow-sm">
+            <div class="flex flex-wrap items-center gap-2">
+                <span id="status-pill-threads" class="text-xs px-2.5 py-1 rounded border font-medium bg-slate-100 text-slate-600 border-slate-200">
+                    Threads: Memeriksa...
+                </span>
+                <span id="status-pill-ai" class="text-xs px-2.5 py-1 rounded border font-medium bg-slate-100 text-slate-600 border-slate-200">
+                    AI: Memeriksa...
+                </span>
+                <button id="btn-pipeline" onclick="runPipeline()" class="inline-flex items-center gap-2 bg-emerald-700 hover:bg-emerald-800 text-white text-sm font-medium px-4 py-2 rounded-md transition shadow-sm ml-1">
                     <span id="pipeline-icon">🔄</span>
                     <span id="pipeline-text">Jalankan Pipeline</span>
                 </button>
@@ -147,8 +212,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 Siap Diposting
                 <span id="badge-approved-count" class="bg-slate-100 text-slate-700 text-xs px-2 py-0.5 rounded-full font-bold">0</span>
             </button>
-            <button id="tab-log-btn" onclick="switchTab('log')" class="py-3 px-1 border-b-2 border-transparent font-medium text-sm text-slate-600 hover:text-slate-900">
-                Riwayat & Pengaturan
+            <button id="tab-settings-btn" onclick="switchTab('settings')" class="py-3 px-1 border-b-2 border-transparent font-medium text-sm text-slate-600 hover:text-slate-900 flex items-center gap-1.5">
+                <span>⚙️</span> Pengaturan & Kredensial
             </button>
         </div>
 
@@ -171,23 +236,120 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             <div id="approved-list" class="space-y-4"></div>
         </div>
 
-        <!-- Section 3: Riwayat & Pengaturan -->
-        <div id="view-log" class="hidden space-y-6">
+        <!-- Section 3: Pengaturan & Kredensial -->
+        <div id="view-settings" class="hidden space-y-6">
+            <div class="bg-white border border-slate-200 rounded-lg p-6 shadow-sm">
+                <div class="flex flex-wrap items-center justify-between pb-4 border-b border-slate-200 mb-6 gap-2">
+                    <div>
+                        <h2 class="text-base font-bold text-slate-900">Pengaturan Kredensial & Model</h2>
+                        <p class="text-xs text-slate-500 mt-0.5">Ubah token Threads API dan AI langsung dari formulir ini tanpa harus mengedit berkas .env.</p>
+                    </div>
+                    <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200">
+                        Aktif Otomatis
+                    </span>
+                </div>
+
+                <form onsubmit="event.preventDefault(); saveSettings();" class="space-y-6">
+                    <!-- Bagian Threads API -->
+                    <div>
+                        <h3 class="text-sm font-bold text-slate-900 mb-3 flex items-center gap-2">
+                            <span class="text-base">🧵</span> Kredensial Meta Threads API
+                        </h3>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-700 mb-1">Threads Access Token</label>
+                                <div class="relative">
+                                    <input type="password" id="cfg-threads-token" class="w-full text-sm font-mono p-2.5 pr-10 border border-slate-300 rounded-md focus:ring-2 focus:ring-emerald-600 focus:outline-none" placeholder="Masukkan token Graph API resmi">
+                                    <button type="button" onclick="togglePasswordVisibility('cfg-threads-token')" class="absolute inset-y-0 right-0 px-3 flex items-center text-slate-400 hover:text-slate-600" title="Tampilkan/Sembunyikan">
+                                        👁️
+                                    </button>
+                                </div>
+                                <p class="text-xs text-slate-500 mt-1">Token resmi dari Meta Developers Dashboard (Threads Graph API).</p>
+                            </div>
+
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-700 mb-1">Threads User ID</label>
+                                <input type="text" id="cfg-threads-user-id" class="w-full text-sm p-2.5 border border-slate-300 rounded-md focus:ring-2 focus:ring-emerald-600 focus:outline-none" placeholder="me">
+                                <p class="text-xs text-slate-500 mt-1">Gunakan 'me' untuk akun pemilik token atau isi user ID khusus.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <hr class="border-slate-200">
+
+                    <!-- Bagian AI API -->
+                    <div>
+                        <h3 class="text-sm font-bold text-slate-900 mb-3 flex items-center gap-2">
+                            <span class="text-base">🤖</span> Kredensial AI Model
+                        </h3>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-700 mb-1">AI API Key</label>
+                                <div class="relative">
+                                    <input type="password" id="cfg-ai-key" class="w-full text-sm font-mono p-2.5 pr-10 border border-slate-300 rounded-md focus:ring-2 focus:ring-emerald-600 focus:outline-none" placeholder="sk-ant-... atau sk-...">
+                                    <button type="button" onclick="togglePasswordVisibility('cfg-ai-key')" class="absolute inset-y-0 right-0 px-3 flex items-center text-slate-400 hover:text-slate-600" title="Tampilkan/Sembunyikan">
+                                        👁️
+                                    </button>
+                                </div>
+                                <p class="text-xs text-slate-500 mt-1">Kunci API dari Anthropic, OpenAI, atau OpenRouter.</p>
+                            </div>
+
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-700 mb-1">Model AI</label>
+                                <div class="space-y-2">
+                                    <select id="cfg-ai-model-select" onchange="handleModelSelectChange()" class="w-full text-sm p-2.5 border border-slate-300 rounded-md bg-white focus:ring-2 focus:ring-emerald-600 focus:outline-none">
+                                        <option value="claude-3-5-sonnet-20241022">Claude 3.5 Sonnet (claude-3-5-sonnet-20241022)</option>
+                                        <option value="claude-3-haiku-20240307">Claude 3 Haiku (claude-3-haiku-20240307)</option>
+                                        <option value="gpt-4o-mini">OpenAI GPT-4o Mini (gpt-4o-mini)</option>
+                                        <option value="deepseek/deepseek-chat">DeepSeek Chat (via OpenRouter)</option>
+                                        <option value="custom">Model Kustom Lainnya...</option>
+                                    </select>
+                                    <input type="text" id="cfg-ai-model-custom" class="hidden w-full text-sm p-2.5 border border-slate-300 rounded-md focus:ring-2 focus:ring-emerald-600 focus:outline-none" placeholder="Contoh: anthropic/claude-3.5-sonnet">
+                                </div>
+                                <p class="text-xs text-slate-500 mt-1">Pilih model untuk validasi relevansi dan drafting balasan.</p>
+                            </div>
+
+                            <div class="md:col-span-2">
+                                <label class="block text-xs font-semibold text-slate-700 mb-1">Base URL AI (Opsional)</label>
+                                <input type="text" id="cfg-ai-base-url" class="w-full text-sm font-mono p-2.5 border border-slate-300 rounded-md focus:ring-2 focus:ring-emerald-600 focus:outline-none" placeholder="https://openrouter.ai/api/v1 (kosongkan untuk URL resmi Anthropic/OpenAI)">
+                                <p class="text-xs text-slate-500 mt-1">Hanya diisi jika menggunakan reverse proxy atau provider pihak ketiga seperti OpenRouter.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <hr class="border-slate-200">
+
+                    <!-- Bagian Filter Scoring -->
+                    <div>
+                        <h3 class="text-sm font-bold text-slate-900 mb-3 flex items-center gap-2">
+                            <span class="text-base">⚖️</span> Parameter Filter & Scoring
+                        </h3>
+                        <div class="max-w-xs">
+                            <label class="block text-xs font-semibold text-slate-700 mb-1">Ambang Batas Skor Relevansi</label>
+                            <input type="number" id="cfg-score-threshold" min="1" max="10" value="3" class="w-full text-sm p-2.5 border border-slate-300 rounded-md focus:ring-2 focus:ring-emerald-600 focus:outline-none">
+                            <p class="text-xs text-slate-500 mt-1">Nilai minimum agar post diproses ke tahap review AI (Default: 3).</p>
+                        </div>
+                    </div>
+
+                    <div class="pt-4 border-t border-slate-200 flex items-center gap-3">
+                        <button type="submit" id="btn-save-settings" class="bg-emerald-700 hover:bg-emerald-800 text-white font-medium text-sm px-5 py-2.5 rounded-md transition shadow-sm">
+                            Simpan Pengaturan
+                        </button>
+                        <button type="button" onclick="loadSettings()" class="border border-slate-300 hover:bg-slate-100 text-slate-700 font-medium text-sm px-4 py-2.5 rounded-md transition">
+                            Muat Ulang
+                        </button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Informasi Prinsip & Etika PRD -->
             <div class="bg-white border border-slate-200 rounded-lg p-5">
-                <h3 class="font-bold text-slate-900 mb-2">Prinsip & Keamanan Etika</h3>
+                <h3 class="font-bold text-slate-900 mb-2">Prinsip & Keamanan Etika (PRD Bagian 7)</h3>
                 <ul class="text-sm text-slate-600 space-y-2 list-disc list-inside">
                     <li><strong>Human-in-the-loop:</strong> Tidak ada bot auto-posting. Semua balasan wajib disetujui dan disalin manual oleh manusia.</li>
                     <li><strong>Relevansi Ketat:</strong> Bridging ke Majelisku.web.id hanya disertakan jika penanya secara eksplisit mencari info kajian.</li>
-                    <li><strong>Transparansi:</strong> Jawaban substantif dan tidak manipulatif secara emosi.</li>
+                    <li><strong>Transparansi:</strong> Jawaban substantif dan tidak memanipulasi emosi pembaca.</li>
                 </ul>
-            </div>
-            <div class="bg-white border border-slate-200 rounded-lg p-5">
-                <h3 class="font-bold text-slate-900 mb-3">Informasi Sistem</h3>
-                <div class="text-sm text-slate-700 space-y-2">
-                    <p><strong>Ambang Batas Skor:</strong> """ + str(SCORE_THRESHOLD) + """ poin</p>
-                    <p><strong>AI Model Terkonfigurasi:</strong> """ + AI_MODEL + """</p>
-                    <p><strong>Status Kredensial Threads:</strong> """ + ("Terkonfigurasi" if THREADS_ACCESS_TOKEN else "Belum diisi (Mode sampel aman aktif)") + """</p>
-                </div>
             </div>
         </div>
     </main>
@@ -202,28 +364,29 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             const toast = document.getElementById('toast');
             toast.innerText = msg;
             toast.classList.remove('hidden');
-            setTimeout(() => toast.classList.add('hidden'), 3000);
+            setTimeout(() => toast.classList.add('hidden'), 3500);
         }
 
         function switchTab(tab) {
             currentTab = tab;
             document.getElementById('view-review').classList.toggle('hidden', tab !== 'review');
             document.getElementById('view-approved').classList.toggle('hidden', tab !== 'approved');
-            document.getElementById('view-log').classList.toggle('hidden', tab !== 'log');
+            document.getElementById('view-settings').classList.toggle('hidden', tab !== 'settings');
 
             const btnRev = document.getElementById('tab-review-btn');
             const btnApp = document.getElementById('tab-approved-btn');
-            const btnLog = document.getElementById('tab-log-btn');
+            const btnSet = document.getElementById('tab-settings-btn');
 
             const activeClass = 'py-3 px-1 border-b-2 border-emerald-700 font-semibold text-sm text-emerald-800 flex items-center gap-2';
             const inactiveClass = 'py-3 px-1 border-b-2 border-transparent font-medium text-sm text-slate-600 hover:text-slate-900 flex items-center gap-2';
 
             btnRev.className = (tab === 'review') ? activeClass : inactiveClass;
             btnApp.className = (tab === 'approved') ? activeClass : inactiveClass;
-            btnLog.className = (tab === 'log') ? activeClass.replace('flex items-center gap-2', '') : inactiveClass.replace('flex items-center gap-2', '');
+            btnSet.className = (tab === 'settings') ? activeClass.replace('gap-2', 'gap-1.5') : inactiveClass.replace('gap-2', 'gap-1.5');
 
             if (tab === 'review') loadQueue();
             if (tab === 'approved') loadApproved();
+            if (tab === 'settings') loadSettings();
         }
 
         async function fetchStats() {
@@ -236,8 +399,114 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 document.getElementById('stat-approved').innerText = data.approved;
                 document.getElementById('badge-review-count').innerText = data.pending_review;
                 document.getElementById('badge-approved-count').innerText = data.approved;
+
+                // Update Status Pills di Navbar
+                const pThreads = document.getElementById('status-pill-threads');
+                if (data.threads_configured) {
+                    pThreads.className = 'text-xs px-2.5 py-1 rounded border font-medium bg-emerald-50 text-emerald-800 border-emerald-200';
+                    pThreads.innerText = 'Threads: Aktif';
+                } else {
+                    pThreads.className = 'text-xs px-2.5 py-1 rounded border font-medium bg-amber-50 text-amber-800 border-amber-200';
+                    pThreads.innerText = 'Threads: Belum Diisi';
+                }
+
+                const pAi = document.getElementById('status-pill-ai');
+                if (data.ai_configured) {
+                    pAi.className = 'text-xs px-2.5 py-1 rounded border font-medium bg-emerald-50 text-emerald-800 border-emerald-200';
+                    pAi.innerText = 'AI: ' + (data.ai_model || 'Aktif');
+                } else {
+                    pAi.className = 'text-xs px-2.5 py-1 rounded border font-medium bg-slate-100 text-slate-700 border-slate-200';
+                    pAi.innerText = 'AI: Fallback Mode';
+                }
             } catch (e) {
                 console.error(e);
+            }
+        }
+
+        async function loadSettings() {
+            try {
+                const res = await fetch('/api/settings');
+                const data = await res.json();
+                document.getElementById('cfg-threads-token').value = data.threads_token || '';
+                document.getElementById('cfg-threads-user-id').value = data.threads_user_id || 'me';
+                document.getElementById('cfg-ai-key').value = data.ai_api_key || '';
+                document.getElementById('cfg-ai-base-url').value = data.ai_base_url || '';
+                document.getElementById('cfg-score-threshold').value = data.score_threshold || 3;
+
+                const selectEl = document.getElementById('cfg-ai-model-select');
+                const customEl = document.getElementById('cfg-ai-model-custom');
+                const currentModel = data.ai_model || 'claude-3-5-sonnet-20241022';
+
+                let found = false;
+                for (let i = 0; i < selectEl.options.length; i++) {
+                    if (selectEl.options[i].value === currentModel) {
+                        selectEl.selectedIndex = i;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    selectEl.value = 'custom';
+                    customEl.value = currentModel;
+                    customEl.classList.remove('hidden');
+                } else {
+                    customEl.classList.add('hidden');
+                }
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        function handleModelSelectChange() {
+            const selectEl = document.getElementById('cfg-ai-model-select');
+            const customEl = document.getElementById('cfg-ai-model-custom');
+            if (selectEl.value === 'custom') {
+                customEl.classList.remove('hidden');
+                customEl.focus();
+            } else {
+                customEl.classList.add('hidden');
+            }
+        }
+
+        function togglePasswordVisibility(id) {
+            const el = document.getElementById(id);
+            if (el) {
+                el.type = (el.type === 'password') ? 'text' : 'password';
+            }
+        }
+
+        async function saveSettings() {
+            const btn = document.getElementById('btn-save-settings');
+            btn.disabled = true;
+            btn.innerText = 'Menyimpan...';
+
+            const selectEl = document.getElementById('cfg-ai-model-select');
+            const customEl = document.getElementById('cfg-ai-model-custom');
+            const chosenModel = (selectEl.value === 'custom') ? customEl.value.trim() : selectEl.value;
+
+            const payload = {
+                threads_token: document.getElementById('cfg-threads-token').value.trim(),
+                threads_user_id: document.getElementById('cfg-threads-user-id').value.trim() || 'me',
+                ai_api_key: document.getElementById('cfg-ai-key').value.trim(),
+                ai_model: chosenModel || 'claude-3-5-sonnet-20241022',
+                ai_base_url: document.getElementById('cfg-ai-base-url').value.trim(),
+                score_threshold: parseInt(document.getElementById('cfg-score-threshold').value, 10) || 3
+            };
+
+            try {
+                const res = await fetch('/api/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                showToast(data.message || 'Pengaturan berhasil disimpan!');
+                fetchStats();
+            } catch (e) {
+                showToast('Gagal menyimpan pengaturan');
+            } finally {
+                btn.disabled = false;
+                btn.innerText = 'Simpan Pengaturan';
             }
         }
 
@@ -415,6 +684,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         // Inisialisasi awal
         fetchStats();
         loadQueue();
+        loadSettings();
     </script>
 </body>
 </html>

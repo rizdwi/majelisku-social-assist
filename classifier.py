@@ -5,7 +5,7 @@ from config import (
     MUST_HAVE_OBJECT,
     BOOSTERS,
     EXCLUDE_PATTERNS,
-    SCORE_THRESHOLD,
+    get_score_threshold,
     DB_PATH
 )
 from db import get_pending_posts, update_post_score_and_status
@@ -59,9 +59,10 @@ def classify_pending_posts(db_path: Optional[str] = None) -> int:
     pending = get_pending_posts(db_path or DB_PATH)
     processed_count = 0
 
+    threshold = get_score_threshold()
     for post in pending:
         score, _ = score_post(post["text"])
-        status = "candidate" if score >= SCORE_THRESHOLD else "rejected"
+        status = "candidate" if score >= threshold else "rejected"
         update_post_score_and_status(post["post_id"], score, status, db_path or DB_PATH)
         processed_count += 1
 

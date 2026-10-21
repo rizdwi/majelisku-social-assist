@@ -3,7 +3,12 @@ import logging
 import re
 from typing import Dict, Any, Optional
 import requests
-from config import AI_API_KEY, AI_MODEL, AI_BASE_URL, DB_PATH
+from config import (
+    get_ai_api_key,
+    get_ai_model,
+    get_ai_base_url,
+    DB_PATH
+)
 from db import get_candidates_without_draft, save_draft
 
 logger = logging.getLogger(__name__)
@@ -50,26 +55,29 @@ def extract_json_from_text(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 def call_ai_api(post_text: str) -> Dict[str, Any]:
+    api_key = get_ai_api_key()
+    model = get_ai_model()
+    base_url = get_ai_base_url()
+
     # Jika API key belum diisi, gunakan fallback deterministik yang aman
-    if not AI_API_KEY:
-        # Heuristic dasar untuk testing offline
+    if not api_key:
         return {
             "is_relevant": True,
-            "reasoning": "Validasi otomatis (kredensial AI belum diisi di .env, mode fallback aktif).",
+            "reasoning": "Validasi otomatis (kredensial AI belum diisi, mode fallback aktif).",
             "draft_reply": "Assalamu'alaikum kak, untuk info jadwal kajian sunnah terdekat bisa coba cek di Majelisku.web.id ya. Semoga dimudahkan dan bermanfaat.",
             "include_bridging": True
         }
 
     # Dukungan Anthropic API
-    if "claude" in AI_MODEL.lower() or AI_API_KEY.startswith("sk-ant"):
-        url = AI_BASE_URL or "https://api.anthropic.com/v1/messages"
+    if "claude" in model.lower() or api_key.startswith("sk-ant"):
+        url = base_url or "https://api.anthropic.com/v1/messages"
         headers = {
-            "x-api-key": AI_API_KEY,
+            "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
             "content-type": "application/json"
         }
         payload = {
-            "model": AI_MODEL,
+            "model": model,
             "max_tokens": 500,
             "system": SYSTEM_PROMPT,
             "messages": [
@@ -85,13 +93,13 @@ def call_ai_api(post_text: str) -> Dict[str, Any]:
             return parsed
 
     # Dukungan OpenAI / OpenRouter / endpoint kompatibel
-    url = AI_BASE_URL or "https://api.openai.com/v1/chat/completions"
+    url = base_url or "https://api.openai.com/v1/chat/completions"
     headers = {
-        "Authorization": f"Bearer {AI_API_KEY}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
     payload = {
-        "model": AI_MODEL if "claude" not in AI_MODEL.lower() else "gpt-4o-mini",
+        "model": model if "claude" not in model.lower() else "gpt-4o-mini",
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": f"Postingan Threads:\n\"{post_text}\""}

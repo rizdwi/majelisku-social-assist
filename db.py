@@ -40,6 +40,12 @@ def init_db(db_path: Optional[str] = None) -> None:
                 reviewed_at TEXT
             );
         """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            );
+        """)
         conn.commit()
 
 def save_raw_posts(posts: List[Dict[str, Any]], db_path: Optional[str] = None) -> int:
@@ -185,3 +191,24 @@ def get_stats(db_path: Optional[str] = None) -> Dict[str, int]:
             "approved": approved,
             "skipped": skipped
         }
+
+def get_setting(key: str, default: Optional[str] = None, db_path: Optional[str] = None) -> Optional[str]:
+    with get_db(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+        row = cursor.fetchone()
+        if row and row["value"] is not None:
+            return row["value"]
+        return default
+
+def set_setting(key: str, value: str, db_path: Optional[str] = None) -> None:
+    with get_db(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, str(value)))
+        conn.commit()
+
+def get_all_settings(db_path: Optional[str] = None) -> Dict[str, str]:
+    with get_db(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT key, value FROM settings")
+        return {row["key"]: row["value"] for row in cursor.fetchall()}

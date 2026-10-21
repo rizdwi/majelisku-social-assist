@@ -4,9 +4,9 @@ from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 import requests
 from config import (
-    THREADS_ACCESS_TOKEN,
-    THREADS_USER_ID,
-    THREADS_API_BASE_URL,
+    get_threads_token,
+    get_threads_user_id,
+    get_threads_api_base_url,
     KEYWORDS,
     DB_PATH
 )
@@ -54,18 +54,22 @@ MOCK_SAMPLE_POSTS = [
 ]
 
 def fetch_from_threads_api() -> List[Dict[str, Any]]:
-    if not THREADS_ACCESS_TOKEN:
-        logger.warning("THREADS_ACCESS_TOKEN belum diisi di .env. Lewati pemanggilan API Threads.")
+    token = get_threads_token()
+    user_id = get_threads_user_id()
+    api_base = get_threads_api_base_url()
+
+    if not token:
+        logger.warning("Token Threads belum diisi. Lewati pemanggilan API Threads.")
         return []
 
     collected_posts: List[Dict[str, Any]] = []
-    headers = {"Authorization": f"Bearer {THREADS_ACCESS_TOKEN}"}
+    headers = {"Authorization": f"Bearer {token}"}
 
     # Coba endpoint pencarian atau feed resmi Threads Graph API
     for kw in KEYWORDS:
         try:
             # Endpoint standar pencarian Threads Graph API
-            url = f"{THREADS_API_BASE_URL}/threads/search"
+            url = f"{api_base}/threads/search"
             params = {
                 "q": kw,
                 "fields": "id,text,permalink,timestamp,username"
@@ -89,7 +93,7 @@ def fetch_from_threads_api() -> List[Dict[str, Any]]:
     # Fallback endpoint user threads jika query search memerlukan approval khusus
     if not collected_posts:
         try:
-            url = f"{THREADS_API_BASE_URL}/{THREADS_USER_ID}/threads"
+            url = f"{api_base}/{user_id}/threads"
             params = {"fields": "id,text,permalink,timestamp,username"}
             res = requests.get(url, headers=headers, params=params, timeout=15)
             if res.status_code == 200:
@@ -109,9 +113,10 @@ def fetch_from_threads_api() -> List[Dict[str, Any]]:
 
 def run_fetch(mock_mode: bool = False, db_path: Optional[str] = None) -> int:
     init_db(db_path or DB_PATH)
+    token = get_threads_token()
 
-    if mock_mode or (not THREADS_ACCESS_TOKEN):
-        if not THREADS_ACCESS_TOKEN and not mock_mode:
+    if mock_mode or (not token):
+        if not token and not mock_mode:
             logger.info("Kredensial Threads belum terisi. Memuat data sampel untuk verifikasi alur.")
         posts = MOCK_SAMPLE_POSTS
     else:

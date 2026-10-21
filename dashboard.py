@@ -1,6 +1,15 @@
 import streamlit as st
 from datetime import datetime
-from config import THREADS_ACCESS_TOKEN, AI_API_KEY, AI_MODEL, SCORE_THRESHOLD
+from config import (
+    get_threads_token,
+    get_threads_user_id,
+    get_ai_api_key,
+    get_ai_model,
+    get_ai_base_url,
+    get_score_threshold,
+    save_app_settings,
+    DB_PATH
+)
 from db import (
     init_db,
     get_review_queue,
@@ -89,14 +98,18 @@ st.sidebar.divider()
 st.sidebar.subheader("Status Konfigurasi")
 
 # Indikator Kredensial Threads
-if THREADS_ACCESS_TOKEN:
+curr_threads_token = get_threads_token()
+curr_ai_key = get_ai_api_key()
+curr_ai_model = get_ai_model()
+
+if curr_threads_token:
     st.sidebar.success("Threads Token: Terkonfigurasi")
 else:
-    st.sidebar.warning("Threads Token: Belum diisi (.env)")
+    st.sidebar.warning("Threads Token: Belum diisi")
 
 # Indikator Kredensial AI
-if AI_API_KEY:
-    st.sidebar.success(f"AI Model: {AI_MODEL}")
+if curr_ai_key:
+    st.sidebar.success(f"AI Model: {curr_ai_model}")
 else:
     st.sidebar.info("AI API Key: Mode Fallback Aktif")
 
@@ -130,10 +143,10 @@ st.title("Review Balasan Threads")
 st.write("Verifikasi kesesuaian thread pencarian kajian sebelum balasan disalin ke Threads.")
 
 # Tab Navigasi Antarmuka
-tab_review, tab_ready, tab_history = st.tabs([
+tab_review, tab_ready, tab_settings = st.tabs([
     f"Antrean Review ({stats['pending_review']})",
     f"Siap Diposting ({stats['approved']})",
-    "Riwayat & Log"
+    "Pengaturan & Riwayat"
 ])
 
 # TAB 1: Antrean Review
@@ -264,11 +277,75 @@ with tab_ready:
 
                 st.divider()
 
-# TAB 3: Riwayat & Log
-with tab_history:
+# TAB 3: Pengaturan & Riwayat
+with tab_settings:
+    st.subheader("Pengaturan Kredensial & Model")
+    st.caption("Ubah konfigurasi langsung dari antarmuka ini. Pengaturan disimpan langsung ke database lokal.")
+
+    with st.form("settings_form"):
+        col_t1, col_t2 = st.columns(2)
+        with col_t1:
+            cfg_token = st.text_input(
+                "Threads Access Token",
+                value=get_threads_token(),
+                type="password",
+                help="Token resmi dari Meta Developers Dashboard (Threads Graph API)"
+            )
+        with col_t2:
+            cfg_user_id = st.text_input(
+                "Threads User ID",
+                value=get_threads_user_id(),
+                help="Gunakan 'me' atau ID spesifik akun Threads"
+            )
+
+        col_a1, col_a2 = st.columns(2)
+        with col_a1:
+            cfg_ai_key = st.text_input(
+                "AI API Key",
+                value=get_ai_api_key(),
+                type="password",
+                help="Kunci API Anthropic / OpenAI / OpenRouter"
+            )
+        with col_a2:
+            cfg_ai_model = st.text_input(
+                "Model AI",
+                value=get_ai_model(),
+                help="Contoh: claude-3-5-sonnet-20241022, gpt-4o-mini, dll."
+            )
+
+        col_b1, col_b2 = st.columns(2)
+        with col_b1:
+            cfg_base_url = st.text_input(
+                "Base URL AI (Opsional)",
+                value=get_ai_base_url(),
+                help="Contoh: https://openrouter.ai/api/v1 (kosongkan jika default)"
+            )
+        with col_b2:
+            cfg_threshold = st.number_input(
+                "Ambang Batas Skor Relevansi",
+                min_value=1,
+                max_value=10,
+                value=get_score_threshold(),
+                help="Nilai minimum agar post diproses ke tahap review AI (Default: 3)"
+            )
+
+        submitted = st.form_submit_button("Simpan Pengaturan", type="primary")
+        if submitted:
+            save_app_settings({
+                "THREADS_ACCESS_TOKEN": cfg_token.strip(),
+                "THREADS_USER_ID": cfg_user_id.strip() or "me",
+                "AI_API_KEY": cfg_ai_key.strip(),
+                "AI_MODEL": cfg_ai_model.strip() or "claude-3-5-sonnet-20241022",
+                "AI_BASE_URL": cfg_base_url.strip(),
+                "SCORE_THRESHOLD": str(cfg_threshold)
+            })
+            st.success("Pengaturan berhasil disimpan dan langsung aktif!")
+            st.rerun()
+
+    st.divider()
     st.subheader("Ringkasan Filter dan Aktivitas")
     st.write("Semua proses berjalan secara lokal pada database SQLite:")
-    st.code(f"Lokasi Database: config.DB_PATH\nAmbang Batas Skor Relevansi: {SCORE_THRESHOLD}", language="text")
+    st.code(f"Lokasi Database: {DB_PATH}\nAmbang Batas Skor Relevansi: {get_score_threshold()}", language="text")
 
     st.write("**Daftar Status Saat Ini:**")
     st.table({
