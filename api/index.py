@@ -1,17 +1,19 @@
 import os
 import sys
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional, List, Dict, Any
+
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 
 # Pastikan root directory terbaca dalam Python path
 CURRENT_DIR = Path(__file__).resolve().parent
 ROOT_DIR = CURRENT_DIR.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
-
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
 
 from config import (
     get_threads_token,
@@ -25,8 +27,12 @@ from config import (
 )
 from db import (
     init_db,
+    save_raw_posts,
     get_review_queue,
     get_approved_queue,
+    get_skipped_queue,
+    reset_draft_to_pending,
+    reset_all_drafts_to_pending,
     update_draft_review,
     get_stats
 )
@@ -49,7 +55,7 @@ class SettingsRequest(BaseModel):
     threads_token: Optional[str] = ""
     threads_user_id: Optional[str] = "me"
     ai_api_key: Optional[str] = ""
-    ai_model: Optional[str] = "claude-3-5-sonnet-20241022"
+    ai_model: Optional[str] = "gemini-1.5-flash"
     ai_base_url: Optional[str] = ""
     score_threshold: Optional[int] = 3
 
@@ -58,8 +64,16 @@ class ValidateRequest(BaseModel):
     threads_token: Optional[str] = ""
     threads_user_id: Optional[str] = "me"
     ai_api_key: Optional[str] = ""
-    ai_model: Optional[str] = "claude-3-5-sonnet-20241022"
+    ai_model: Optional[str] = "gemini-1.5-flash"
     ai_base_url: Optional[str] = ""
+
+class AddThreadRequest(BaseModel):
+    author: Optional[str] = "threads_user"
+    text: str
+    url: Optional[str] = ""
+
+class ResetQueueRequest(BaseModel):
+    post_id: Optional[str] = None
 
 @app.get("/api/stats")
 def api_stats():
@@ -76,6 +90,10 @@ def api_queue():
 @app.get("/api/approved")
 def api_approved():
     return get_approved_queue()
+
+@app.get("/api/skipped")
+def api_skipped():
+    return get_skipped_queue()
 
 @app.post("/api/review")
 def api_review(req: ReviewRequest):
@@ -100,6 +118,65 @@ def api_review(req: ReviewRequest):
     else:
         raise HTTPException(status_code=400, detail="Aksi tidak dikenal")
     return {"status": "ok", "stats": get_stats()}
+
+@app.post("/api/reset-queue")
+def api_reset_queue(req: Optional[ResetQueueRequest] = None):
+    post_id = req.post_id if req else None
+    if post_id:
+        reset_draft_to_pending(post_id)
+    else:
+        reset_all_drafts_to_pending()
+    return {"status": "ok", "stats": get_stats()}
+
+@app.post("/api/add-thread")
+def api_add_thread(req: AddThreadRequest):
+    if not req.text.strip():
+        raise HTTPException(status_code=400, detail="Teks thread wajib diisi.")
+    post_id = f"custom_{uuid.uuid4().hex[:8]}"
+    author = req.author.strip().lstrip("@") or "threads_user"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    post = [{
+        "post_id": post_id,
+        "author": author,
+        "text": req.text.strip(),
+        "url": req.url.strip() or f"https://www.threads.net/@{author}/post/{post_id}",
+        "created_at": now_iso
+    }]
+    save_raw_posts(post)
+    classify_pending_posts()
+    process_candidates()
+    return {"status": "ok", "post_id": post_id, "stats": get_stats()}
+
+@app.post("/api/seed-fresh-samples")
+def api_seed_fresh_samples():
+    now_str = datetime.now(timezone.utc).isoformat()
+    samples = [
+        {
+            "post_id": f"live_kajian_{uuid.uuid4().hex[:6]}",
+            "author": "salwa_jakarta",
+            "text": "Bismillah, ada yang punya info rekomendasi kajian sunnah rutin di Jakarta Selatan (sekitar Blok M atau Senopati) untuk akhwat pemula? Mau mulai ikut ngaji offline lagi.",
+            "url": "https://www.threads.net/@salwa_jakarta",
+            "created_at": now_str
+        },
+        {
+            "post_id": f"live_kajian_{uuid.uuid4().hex[:6]}",
+            "author": "rifqi_tangerang",
+            "text": "Info tempat ngaji / majelis taklim di BSD Serpong yang rutin bahas kitab aqidah shahihah dong agan-agan, jadwalnya dimana ya?",
+            "url": "https://www.threads.net/@rifqi_tangerang",
+            "created_at": now_str
+        },
+        {
+            "post_id": f"live_kajian_{uuid.uuid4().hex[:6]}",
+            "author": "hamba_allah_bdg",
+            "text": "Kira-kira sabtu atau ahad besok ada info jadwal kajian sunnah di daerah Bandung kota gak ya? Mau ajak keluarga ngaji bareng.",
+            "url": "https://www.threads.net/@hamba_allah_bdg",
+            "created_at": now_str
+        }
+    ]
+    save_raw_posts(samples)
+    classified = classify_pending_posts()
+    drafted = process_candidates()
+    return {"status": "ok", "added": len(samples), "classified": classified, "drafted": drafted, "stats": get_stats()}
 
 @app.post("/api/pipeline")
 def api_pipeline():
@@ -132,16 +209,16 @@ def api_get_settings():
 @app.post("/api/settings")
 def api_save_settings(req: SettingsRequest):
     save_app_settings({
-        "THREADS_ACCESS_TOKEN": req.threads_token or "",
-        "THREADS_USER_ID": req.threads_user_id or "me",
-        "AI_API_KEY": req.ai_api_key or "",
-        "AI_MODEL": req.ai_model or "claude-3-5-sonnet-20241022",
-        "AI_BASE_URL": req.ai_base_url or "",
+        "THREADS_ACCESS_TOKEN": req.threads_token.strip() if req.threads_token else "",
+        "THREADS_USER_ID": req.threads_user_id.strip() if req.threads_user_id else "me",
+        "AI_API_KEY": req.ai_api_key.strip() if req.ai_api_key else "",
+        "AI_MODEL": req.ai_model.strip() if req.ai_model else "gemini-1.5-flash",
+        "AI_BASE_URL": req.ai_base_url.strip() if req.ai_base_url else "",
         "SCORE_THRESHOLD": str(req.score_threshold or 3)
     })
     return {
         "status": "ok",
-        "message": "Pengaturan berhasil disimpan dan langsung aktif.",
+        "message": "Pengaturan kredensial berhasil disimpan dan langsung aktif.",
         "settings": {
             "threads_token": get_threads_token(),
             "threads_user_id": get_threads_user_id(),
@@ -162,11 +239,11 @@ def api_validate_key(req: ValidateRequest):
     elif req.target == "ai":
         return validate_ai_credentials(
             api_key=req.ai_api_key or "",
-            model=req.ai_model or "claude-3-5-sonnet-20241022",
+            model=req.ai_model or "gemini-1.5-flash",
             base_url=req.ai_base_url or ""
         )
     else:
-        raise HTTPException(status_code=400, detail="Target validasi tidak dikenal")
+        raise HTTPException(status_code=400, detail="Target validasi tidak valid.")
 
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="id">
@@ -227,8 +304,27 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             </div>
         </div>
 
+        <!-- Secondary Action Bar (Cepat) -->
+        <div class="flex flex-wrap items-center justify-between gap-3 mb-4 bg-white border border-slate-200 p-3 rounded-lg shadow-sm">
+            <div class="text-xs text-slate-600 font-medium flex items-center gap-2">
+                <span>⚡</span>
+                <span>Aksi Pengujian Alur:</span>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+                <button onclick="seedFreshSamples()" class="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded border border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 transition shadow-sm">
+                    <span>✨</span> Muat 3 Thread Baru (Uji AI Gemini)
+                </button>
+                <button onclick="openAddModal()" class="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 transition shadow-sm">
+                    <span>✍️</span> Tempel Thread Manual
+                </button>
+                <button onclick="resetAllQueue()" class="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded border border-slate-300 bg-white text-slate-600 hover:bg-slate-100 transition">
+                    <span>🔄</span> Reset Semua ke Antrean
+                </button>
+            </div>
+        </div>
+
         <!-- Tabs Navigation -->
-        <div class="border-b border-slate-200 mb-6 flex gap-6">
+        <div class="border-b border-slate-200 mb-6 flex flex-wrap gap-4 sm:gap-6">
             <button id="tab-review-btn" onclick="switchTab('review')" class="py-3 px-1 border-b-2 border-emerald-700 font-semibold text-sm text-emerald-800 flex items-center gap-2">
                 Antrean Review
                 <span id="badge-review-count" class="bg-emerald-100 text-emerald-800 text-xs px-2 py-0.5 rounded-full font-bold">0</span>
@@ -236,6 +332,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             <button id="tab-approved-btn" onclick="switchTab('approved')" class="py-3 px-1 border-b-2 border-transparent font-medium text-sm text-slate-600 hover:text-slate-900 flex items-center gap-2">
                 Siap Diposting
                 <span id="badge-approved-count" class="bg-slate-100 text-slate-700 text-xs px-2 py-0.5 rounded-full font-bold">0</span>
+            </button>
+            <button id="tab-skipped-btn" onclick="switchTab('skipped')" class="py-3 px-1 border-b-2 border-transparent font-medium text-sm text-slate-600 hover:text-slate-900 flex items-center gap-2">
+                Dilewati (Skipped)
+                <span id="badge-skipped-count" class="bg-slate-100 text-slate-700 text-xs px-2 py-0.5 rounded-full font-bold">0</span>
             </button>
             <button id="tab-settings-btn" onclick="switchTab('settings')" class="py-3 px-1 border-b-2 border-transparent font-medium text-sm text-slate-600 hover:text-slate-900 flex items-center gap-1.5">
                 <span>⚙️</span> Pengaturan & Kredensial
@@ -245,9 +345,23 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <!-- Section 1: Antrean Review -->
         <div id="view-review" class="space-y-4">
             <div id="review-loading" class="text-center py-12 text-slate-500">Memuat data antrean...</div>
-            <div id="review-empty" class="hidden text-center py-12 bg-white border border-dashed border-slate-300 rounded-lg">
-                <p class="text-slate-700 font-medium">Antrean review sedang kosong.</p>
-                <p class="text-sm text-slate-500 mt-1">Semua kandidat telah direview, atau klik "Jalankan Pipeline" untuk memeriksa thread baru.</p>
+            <div id="review-empty" class="hidden text-center py-10 bg-white border border-dashed border-slate-300 rounded-lg p-6">
+                <div class="text-3xl mb-2">📭</div>
+                <h3 class="text-base font-bold text-slate-800">Antrean review saat ini sedang kosong</h3>
+                <p class="text-xs text-slate-500 max-w-md mx-auto mt-1 mb-6">
+                    Semua thread kandidat telah selesai direview (1 disetujui, 2 dilewati). Untuk menguji kemampuan AI Gemini menganalisis thread kajian sunnah, silakan pilih opsi di bawah:
+                </p>
+                <div class="flex flex-wrap items-center justify-center gap-3">
+                    <button onclick="seedFreshSamples()" class="inline-flex items-center gap-2 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold px-4 py-2.5 rounded-md transition shadow-sm">
+                        <span>✨</span> Muat 3 Thread Baru untuk Diuji AI Gemini
+                    </button>
+                    <button onclick="resetAllQueue()" class="inline-flex items-center gap-2 border border-slate-300 hover:bg-slate-100 text-slate-700 text-xs font-semibold px-4 py-2.5 rounded-md transition">
+                        <span>🔄</span> Kembalikan Post yang Dilewati ke Antrean
+                    </button>
+                    <button onclick="openAddModal()" class="inline-flex items-center gap-2 border border-slate-300 hover:bg-slate-100 text-slate-700 text-xs font-semibold px-4 py-2.5 rounded-md transition">
+                        <span>✍️</span> Tempel Thread Manual
+                    </button>
+                </div>
             </div>
             <div id="review-list" class="space-y-4"></div>
         </div>
@@ -261,7 +375,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             <div id="approved-list" class="space-y-4"></div>
         </div>
 
-        <!-- Section 3: Pengaturan & Kredensial -->
+        <!-- Section 3: Dilewati (Skipped) -->
+        <div id="view-skipped" class="hidden space-y-4">
+            <div id="skipped-empty" class="hidden text-center py-12 bg-white border border-dashed border-slate-300 rounded-lg">
+                <p class="text-slate-700 font-medium">Tidak ada post yang dilewati.</p>
+                <p class="text-sm text-slate-500 mt-1">Post yang ditolak atau dilewati dari antrean review akan tercatat di sini.</p>
+            </div>
+            <div id="skipped-list" class="space-y-4"></div>
+        </div>
+
+        <!-- Section 4: Pengaturan & Kredensial -->
         <div id="view-settings" class="hidden space-y-6">
             <div class="bg-white border border-slate-200 rounded-lg p-6 shadow-sm">
                 <div class="flex flex-wrap items-center justify-between pb-4 border-b border-slate-200 mb-6 gap-2">
@@ -300,7 +423,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
                             <div>
                                 <label class="block text-xs font-semibold text-slate-700 mb-1">Threads User ID</label>
-                                <input type="text" id="cfg-threads-user-id" class="w-full text-sm p-2.5 border border-slate-300 rounded-md bg-white focus:ring-2 focus:ring-emerald-600 focus:outline-none" placeholder="me">
+                                <input type="text" id="cfg-threads-user-id" class="w-full text-sm font-mono p-2.5 border border-slate-300 rounded-md bg-white focus:ring-2 focus:ring-emerald-600 focus:outline-none" placeholder="me (atau ID Threads)">
                                 <p class="text-xs text-slate-500 mt-1">Gunakan 'me' untuk akun pemilik token atau isi user ID khusus.</p>
                             </div>
                         </div>
@@ -314,7 +437,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
                             <div class="flex items-center gap-2">
                                 <h3 class="text-sm font-bold text-slate-900 flex items-center gap-2">
-                                    <span class="text-base">🤖</span> Kredensial AI Model
+                                    <span class="text-base">🤖</span> Kredensial AI Model & Provider
                                 </h3>
                                 <span id="badge-ai-provider" class="hidden text-xs font-semibold px-2 py-0.5 rounded"></span>
                             </div>
@@ -332,7 +455,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                                         👁️
                                     </button>
                                 </div>
-                                <p id="hint-ai-key" class="text-xs text-slate-500 mt-1">Kunci API dari Anthropic, OpenAI, atau OpenRouter.</p>
+                                <p id="hint-ai-key" class="text-xs text-slate-500 mt-1">Dukung Google Gemini, Anthropic Claude, OpenAI, dan OpenRouter.</p>
                             </div>
 
                             <div>
@@ -348,14 +471,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                                         <option value="deepseek/deepseek-chat">DeepSeek Chat (via OpenRouter)</option>
                                         <option value="custom">Model Kustom Lainnya...</option>
                                     </select>
-                                    <input type="text" id="cfg-ai-model-custom" class="hidden w-full text-sm p-2.5 border border-slate-300 rounded-md focus:ring-2 focus:ring-emerald-600 focus:outline-none" placeholder="Contoh: anthropic/claude-3.5-sonnet">
+                                    <input type="text" id="cfg-ai-model-custom" class="hidden w-full text-sm p-2.5 border border-slate-300 rounded-md focus:ring-2 focus:ring-emerald-600 focus:outline-none" placeholder="Contoh: gemini-1.5-flash">
                                 </div>
                                 <p class="text-xs text-slate-500 mt-1">Pilih model untuk validasi relevansi dan drafting balasan.</p>
                             </div>
 
                             <div class="md:col-span-2">
                                 <label class="block text-xs font-semibold text-slate-700 mb-1">Base URL AI (Opsional)</label>
-                                <input type="text" id="cfg-ai-base-url" class="w-full text-sm font-mono p-2.5 border border-slate-300 rounded-md focus:ring-2 focus:ring-emerald-600 focus:outline-none" placeholder="https://openrouter.ai/api/v1 (kosongkan untuk URL resmi Anthropic/OpenAI)">
+                                <input type="text" id="cfg-ai-base-url" class="w-full text-sm font-mono p-2.5 border border-slate-300 rounded-md focus:ring-2 focus:ring-emerald-600 focus:outline-none" placeholder="https://openrouter.ai/api/v1 (kosongkan jika default)">
                                 <p class="text-xs text-slate-500 mt-1">Hanya diisi jika menggunakan reverse proxy atau provider pihak ketiga seperti OpenRouter.</p>
                             </div>
                         </div>
@@ -399,6 +522,44 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         </div>
     </main>
 
+    <!-- Modal Input Thread Manual -->
+    <div id="modal-add" class="hidden fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div class="bg-white rounded-lg border border-slate-200 shadow-xl max-w-lg w-full p-6">
+            <div class="flex items-center justify-between pb-3 border-b border-slate-200 mb-4">
+                <h3 class="font-bold text-slate-900 text-base flex items-center gap-2">
+                    <span>✍️</span> Input Postingan Threads Manual
+                </h3>
+                <button onclick="closeAddModal()" class="text-slate-400 hover:text-slate-600 font-bold text-lg">&times;</button>
+            </div>
+
+            <form onsubmit="event.preventDefault(); submitManualThread();" class="space-y-4">
+                <div>
+                    <label class="block text-xs font-semibold text-slate-700 mb-1">Username Pembuat Post (Opsional)</label>
+                    <input type="text" id="manual-author" class="w-full text-sm p-2.5 border border-slate-300 rounded-md focus:ring-2 focus:ring-emerald-600 focus:outline-none" placeholder="fajar_jaksel">
+                </div>
+
+                <div>
+                    <label class="block text-xs font-semibold text-slate-700 mb-1">Teks Postingan Threads <span class="text-red-500">*</span></label>
+                    <textarea id="manual-text" required rows="4" class="w-full text-sm p-2.5 border border-slate-300 rounded-md focus:ring-2 focus:ring-emerald-600 focus:outline-none" placeholder="Contoh: Teman-teman ada info kajian sunnah di sekitar Tebet gak ya? Mau mulai ikut ngaji lagi."></textarea>
+                </div>
+
+                <div>
+                    <label class="block text-xs font-semibold text-slate-700 mb-1">Tautan / URL Thread (Opsional)</label>
+                    <input type="url" id="manual-url" class="w-full text-sm p-2.5 border border-slate-300 rounded-md focus:ring-2 focus:ring-emerald-600 focus:outline-none" placeholder="https://www.threads.net/@user/post/123">
+                </div>
+
+                <div class="pt-2 flex items-center justify-end gap-2">
+                    <button type="button" onclick="closeAddModal()" class="px-4 py-2 border border-slate-300 rounded text-xs font-medium text-slate-600 hover:bg-slate-100 transition">
+                        Batal
+                    </button>
+                    <button type="submit" id="btn-submit-manual" class="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded text-xs font-semibold transition shadow-sm">
+                        Proses dengan AI
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <!-- Toast Notification -->
     <div id="toast" class="fixed bottom-5 right-5 bg-slate-900 text-white px-4 py-2.5 rounded-md shadow-lg text-sm hidden transition z-50"></div>
 
@@ -409,17 +570,19 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             const toast = document.getElementById('toast');
             toast.innerText = msg;
             toast.classList.remove('hidden');
-            setTimeout(() => toast.classList.add('hidden'), 3500);
+            setTimeout(() => toast.classList.add('hidden'), 4000);
         }
 
         function switchTab(tab) {
             currentTab = tab;
             document.getElementById('view-review').classList.toggle('hidden', tab !== 'review');
             document.getElementById('view-approved').classList.toggle('hidden', tab !== 'approved');
+            document.getElementById('view-skipped').classList.toggle('hidden', tab !== 'skipped');
             document.getElementById('view-settings').classList.toggle('hidden', tab !== 'settings');
 
             const btnRev = document.getElementById('tab-review-btn');
             const btnApp = document.getElementById('tab-approved-btn');
+            const btnSkip = document.getElementById('tab-skipped-btn');
             const btnSet = document.getElementById('tab-settings-btn');
 
             const activeClass = 'py-3 px-1 border-b-2 border-emerald-700 font-semibold text-sm text-emerald-800 flex items-center gap-2';
@@ -427,10 +590,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
             btnRev.className = (tab === 'review') ? activeClass : inactiveClass;
             btnApp.className = (tab === 'approved') ? activeClass : inactiveClass;
+            btnSkip.className = (tab === 'skipped') ? activeClass : inactiveClass;
             btnSet.className = (tab === 'settings') ? activeClass.replace('gap-2', 'gap-1.5') : inactiveClass.replace('gap-2', 'gap-1.5');
 
             if (tab === 'review') loadQueue();
             if (tab === 'approved') loadApproved();
+            if (tab === 'skipped') loadSkipped();
             if (tab === 'settings') loadSettings();
         }
 
@@ -444,6 +609,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 document.getElementById('stat-approved').innerText = data.approved;
                 document.getElementById('badge-review-count').innerText = data.pending_review;
                 document.getElementById('badge-approved-count').innerText = data.approved;
+                document.getElementById('badge-skipped-count').innerText = data.skipped || 0;
 
                 // Update Status Pills di Navbar
                 const pThreads = document.getElementById('status-pill-threads');
@@ -626,7 +792,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
                 const selectEl = document.getElementById('cfg-ai-model-select');
                 const customEl = document.getElementById('cfg-ai-model-custom');
-                const currentModel = data.ai_model || 'claude-3-5-sonnet-20241022';
+                const currentModel = data.ai_model || 'gemini-1.5-flash';
 
                 let found = false;
                 for (let i = 0; i < selectEl.options.length; i++) {
@@ -685,7 +851,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 threads_token: token,
                 threads_user_id: document.getElementById('cfg-threads-user-id').value.trim() || 'me',
                 ai_api_key: apiKey,
-                ai_model: chosenModel || 'claude-3-5-sonnet-20241022',
+                ai_model: chosenModel || 'gemini-1.5-flash',
                 ai_base_url: document.getElementById('cfg-ai-base-url').value.trim(),
                 score_threshold: parseInt(document.getElementById('cfg-score-threshold').value, 10) || 3
             };
@@ -700,7 +866,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 showToast(data.message || 'Pengaturan berhasil disimpan!');
                 fetchStats();
 
-                // Picu uji koneksi otomatis jika ada kunci yang diisi
                 if (token) testThreadsConnection();
                 if (apiKey) testAiConnection();
             } catch (e) {
@@ -812,6 +977,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                                 Buka Threads untuk Membalas &rarr;
                             </a>
                             <div class="flex items-center gap-2">
+                                <button onclick="resetSinglePost('${item.post_id}')" class="text-xs px-3 py-1.5 border border-slate-300 rounded font-medium text-slate-600 hover:bg-slate-100 transition">
+                                    Kembalikan ke Antrean
+                                </button>
                                 <button onclick="copyToClipboard('${encodeURIComponent(replyText)}')" class="text-xs px-3 py-1.5 border border-slate-300 rounded font-medium text-slate-700 hover:bg-slate-100 transition">
                                     Salin Teks
                                 </button>
@@ -819,6 +987,50 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                                     Tandai Selesai
                                 </button>
                             </div>
+                        </div>
+                    `;
+                    listEl.appendChild(card);
+                });
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        async function loadSkipped() {
+            document.getElementById('skipped-empty').classList.add('hidden');
+            document.getElementById('skipped-list').innerHTML = '';
+
+            try {
+                const res = await fetch('/api/skipped');
+                const items = await res.json();
+
+                if (items.length === 0) {
+                    document.getElementById('skipped-empty').classList.remove('hidden');
+                    return;
+                }
+
+                const listEl = document.getElementById('skipped-list');
+                items.forEach(item => {
+                    const card = document.createElement('div');
+                    card.className = 'bg-white border border-slate-200 rounded-lg p-5 shadow-sm opacity-90';
+                    card.innerHTML = `
+                        <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
+                            <span class="font-bold text-slate-700">@${item.author}</span>
+                            <span class="text-xs text-slate-400">Dilewati: ${(item.reviewed_at || '').substring(0, 19).replace('T', ' ')}</span>
+                        </div>
+                        <div class="text-sm text-slate-600 mb-3">
+                            "${item.text}"
+                        </div>
+                        <div class="text-xs text-slate-500 mb-3 bg-slate-50 p-2.5 rounded border border-slate-100">
+                            <strong>Analisis AI:</strong> ${item.ai_reasoning || 'Dilewati oleh pengguna'}
+                        </div>
+                        <div class="flex items-center justify-between pt-2 border-t border-slate-100">
+                            <a href="${item.url}" target="_blank" rel="noopener noreferrer" class="text-xs text-slate-500 hover:underline">
+                                Lihat thread asli &rarr;
+                            </a>
+                            <button onclick="resetSinglePost('${item.post_id}')" class="text-xs px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded font-medium transition shadow-sm">
+                                ↩️ Kembalikan ke Antrean Review
+                            </button>
                         </div>
                     `;
                     listEl.appendChild(card);
@@ -843,8 +1055,96 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 fetchStats();
                 if (currentTab === 'review') loadQueue();
                 if (currentTab === 'approved') loadApproved();
+                if (currentTab === 'skipped') loadSkipped();
             } catch (e) {
                 showToast('Gagal memperbarui status');
+            }
+        }
+
+        async function resetSinglePost(postId) {
+            try {
+                const res = await fetch('/api/reset-queue', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ post_id: postId })
+                });
+                const data = await res.json();
+                showToast('Post berhasil dikembalikan ke Antrean Review!');
+                fetchStats();
+                switchTab('review');
+            } catch (e) {
+                showToast('Gagal mengembalikan post ke antrean');
+            }
+        }
+
+        async function resetAllQueue() {
+            if (!confirm('Kembalikan semua post yang dilewati/disetujui kembali ke Antrean Review?')) return;
+            try {
+                const res = await fetch('/api/reset-queue', { method: 'POST' });
+                const data = await res.json();
+                showToast('Semua post berhasil dikembalikan ke Antrean Review!');
+                fetchStats();
+                switchTab('review');
+            } catch (e) {
+                showToast('Gagal mereset antrean');
+            }
+        }
+
+        async function seedFreshSamples() {
+            showToast('Menghubungi AI Gemini untuk menganalisis 3 thread baru...');
+            try {
+                const res = await fetch('/api/seed-fresh-samples', { method: 'POST' });
+                const data = await res.json();
+                showToast(`Sukses: ${data.added} thread baru berhasil dianalisis AI Gemini dan masuk antrean!`);
+                fetchStats();
+                switchTab('review');
+            } catch (e) {
+                showToast('Gagal memuat thread baru');
+            }
+        }
+
+        function openAddModal() {
+            document.getElementById('modal-add').classList.remove('hidden');
+            document.getElementById('manual-text').focus();
+        }
+
+        function closeAddModal() {
+            document.getElementById('modal-add').classList.add('hidden');
+        }
+
+        async function submitManualThread() {
+            const author = document.getElementById('manual-author').value.trim();
+            const text = document.getElementById('manual-text').value.trim();
+            const url = document.getElementById('manual-url').value.trim();
+            const btn = document.getElementById('btn-submit-manual');
+
+            if (!text) {
+                showToast('Teks postingan tidak boleh kosong.');
+                return;
+            }
+
+            btn.disabled = true;
+            btn.innerText = 'Memproses dengan AI...';
+
+            try {
+                const res = await fetch('/api/add-thread', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ author: author, text: text, url: url })
+                });
+                const data = await res.json();
+                closeAddModal();
+                document.getElementById('manual-author').value = '';
+                document.getElementById('manual-text').value = '';
+                document.getElementById('manual-url').value = '';
+                showToast('Thread berhasil ditambahkan dan masuk ke Antrean Review!');
+                fetchStats();
+                switchTab('review');
+            } catch (e) {
+                showToast('Gagal memproses thread manual');
+            } finally {
+                btn.disabled = false;
+                btn.innerText = 'Proses dengan AI';
             }
         }
 
@@ -860,10 +1160,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             try {
                 const res = await fetch('/api/pipeline', { method: 'POST' });
                 const data = await res.json();
-                showToast(`Selesai: ${data.new_posts} fetch, ${data.classified} filter, ${data.drafted} draft.`);
+                if (data.new_posts === 0) {
+                    showToast('Threads API: 0 post baru (fitur search publik butuh persetujuan Meta). Gunakan tombol "Muat 3 Thread Baru" untuk uji.');
+                } else {
+                    showToast(`Selesai: ${data.new_posts} post baru, ${data.classified} filter, ${data.drafted} draft.`);
+                }
                 fetchStats();
                 if (currentTab === 'review') loadQueue();
                 if (currentTab === 'approved') loadApproved();
+                if (currentTab === 'skipped') loadSkipped();
             } catch (e) {
                 showToast('Terjadi kesalahan saat menjalankan pipeline');
             } finally {

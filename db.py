@@ -147,6 +147,40 @@ def get_approved_queue(db_path: Optional[str] = None) -> List[Dict[str, Any]]:
         """)
         return [dict(row) for row in cursor.fetchall()]
 
+def get_skipped_queue(db_path: Optional[str] = None) -> List[Dict[str, Any]]:
+    with get_db(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT r.post_id, r.author, r.text, r.url, r.created_at, r.score,
+                   d.is_relevant, d.ai_reasoning, d.draft_reply, d.include_bridging,
+                   d.final_reply, d.review_status, d.reviewed_at
+            FROM drafts d
+            JOIN raw_posts r ON d.post_id = r.post_id
+            WHERE d.review_status = 'skipped'
+            ORDER BY d.reviewed_at DESC
+        """)
+        return [dict(row) for row in cursor.fetchall()]
+
+def reset_draft_to_pending(post_id: str, db_path: Optional[str] = None) -> None:
+    with get_db(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE drafts
+            SET review_status = 'pending_review', reviewed_at = NULL
+            WHERE post_id = ?
+        """, (post_id,))
+        conn.commit()
+
+def reset_all_drafts_to_pending(db_path: Optional[str] = None) -> int:
+    with get_db(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE drafts
+            SET review_status = 'pending_review', reviewed_at = NULL
+        """)
+        conn.commit()
+        return cursor.rowcount
+
 def update_draft_review(
     post_id: str,
     review_status: str,
