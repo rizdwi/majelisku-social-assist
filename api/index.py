@@ -34,6 +34,7 @@ from db import (
     reset_draft_to_pending,
     reset_all_drafts_to_pending,
     clear_mock_posts,
+    get_candidates_without_draft,
     update_draft_review,
     get_stats,
     get_setting
@@ -114,7 +115,14 @@ def api_stats():
 
 @app.get("/api/queue")
 def api_queue():
-    return get_review_queue()
+    queue = get_review_queue()
+    if not queue:
+        # Jika antrean review kosong tapi ada kandidat belum didraf, otomatis proses draftnya
+        unprocessed = get_candidates_without_draft()
+        if unprocessed:
+            process_candidates()
+            queue = get_review_queue()
+    return queue
 
 @app.get("/api/approved")
 def api_approved():
@@ -161,6 +169,65 @@ def api_reset_queue(req: Optional[ResetQueueRequest] = None):
 def api_clear_mock():
     clear_mock_posts()
     return {"status": "ok", "stats": get_stats()}
+
+@app.post("/api/trigger-meta-test-calls")
+def api_trigger_meta_test_calls():
+    token = get_threads_token()
+    if not token:
+        return {
+            "status": "error",
+            "message": "Token akses Threads belum diisi di Pengaturan."
+        }
+
+    results = {}
+
+    # 1. Panggilan threads_basic: me info
+    try:
+        r1 = requests.get(
+            "https://graph.threads.net/v1.0/me",
+            params={"fields": "id,username", "access_token": token},
+            timeout=10
+        )
+        results["threads_basic_me"] = {
+            "status_code": r1.status_code,
+            "response": r1.json() if r1.status_code == 200 else r1.text[:200]
+        }
+    except Exception as e:
+        results["threads_basic_me"] = {"error": str(e)}
+
+    # 2. Panggilan threads_basic: me/threads
+    try:
+        r2 = requests.get(
+            "https://graph.threads.net/v1.0/me/threads",
+            params={"fields": "id,text", "access_token": token},
+            timeout=10
+        )
+        results["threads_basic_posts"] = {
+            "status_code": r2.status_code,
+            "response": r2.json() if r2.status_code == 200 else r2.text[:200]
+        }
+    except Exception as e:
+        results["threads_basic_posts"] = {"error": str(e)}
+
+    # 3. Panggilan threads_keyword_search: threads/search
+    try:
+        r3 = requests.get(
+            "https://graph.threads.net/v1.0/threads/search",
+            params={"q": "kajian", "access_token": token},
+            timeout=10
+        )
+        results["threads_keyword_search"] = {
+            "status_code": r3.status_code,
+            "response": r3.json() if r3.status_code == 200 else r3.text[:200]
+        }
+    except Exception as e:
+        results["threads_keyword_search"] = {"error": str(e)}
+
+    return {
+        "status": "ok",
+        "message": "Panggilan uji Meta Threads API selesai dikirim.",
+        "results": results
+    }
 
 @app.post("/api/add-thread")
 def api_add_thread(req: AddThreadRequest):
@@ -555,6 +622,24 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 </form>
             </div>
 
+            <!-- Panduan & Pengujian Meta Developers API Test -->
+            <div class="bg-indigo-50/70 border border-indigo-200 rounded-lg p-5">
+                <div class="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                    <div>
+                        <h3 class="font-bold text-indigo-950 flex items-center gap-2">
+                            <span>🚀</span> Panggilan Uji Izin Meta Developers (threads_basic & keyword_search)
+                        </h3>
+                        <p class="text-xs text-indigo-800 mt-1">
+                            Meta mewajibkan minimal <strong>1 panggilan API uji coba</strong> per izin agar status di dasbor Meta berganti dari "0 dari 1 panggilan API diperlukan" menjadi terverifikasi.
+                        </p>
+                    </div>
+                    <button type="button" onclick="triggerMetaTestCalls()" class="inline-flex items-center gap-1.5 text-xs font-semibold px-4 py-2 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white transition shadow-sm whitespace-nowrap">
+                        <span>⚡</span> Jalankan Uji Coba Meta
+                    </button>
+                </div>
+                <div id="meta-test-result" class="hidden mt-3 p-3 bg-white rounded border border-indigo-200 text-xs font-mono text-slate-800 overflow-x-auto"></div>
+            </div>
+
             <!-- Informasi Prinsip & Etika PRD -->
             <div class="bg-white border border-slate-200 rounded-lg p-5">
                 <h3 class="font-bold text-slate-900 mb-2">Prinsip & Keamanan Etika (PRD Bagian 7)</h3>
@@ -876,6 +961,23 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             } finally {
                 btn.disabled = false;
                 btn.innerHTML = '<span>🔍</span> Uji Koneksi AI';
+            }
+        }
+
+        async function triggerMetaTestCalls() {
+            showToast('Mengirimkan panggilan uji coba ke Meta Threads API...');
+            try {
+                const res = await authFetch('/api/trigger-meta-test-calls', { method: 'POST' });
+                const data = await res.json();
+                const box = document.getElementById('meta-test-result');
+                if (box) {
+                    box.classList.remove('hidden');
+                    box.innerHTML = '<strong class="text-indigo-900 block mb-1">Hasil Panggilan API Meta:</strong>' +
+                        '<pre class="text-xs whitespace-pre-wrap">' + JSON.stringify(data, null, 2) + '</pre>';
+                }
+                showToast(data.message || 'Panggilan uji Meta berhasil dikirim! Silakan periksa dasbor Meta.');
+            } catch (e) {
+                showToast('Gagal mengirim panggilan uji ke Meta');
             }
         }
 
