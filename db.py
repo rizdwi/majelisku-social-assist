@@ -189,6 +189,14 @@ def clear_mock_posts(db_path: Optional[str] = None) -> int:
         conn.commit()
         return cursor.rowcount
 
+def wipe_all_database_posts(db_path: Optional[str] = None) -> int:
+    with get_db(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM drafts")
+        cursor.execute("DELETE FROM raw_posts")
+        conn.commit()
+        return cursor.rowcount
+
 def update_draft_review(
     post_id: str,
     review_status: str,

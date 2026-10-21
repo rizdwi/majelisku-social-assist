@@ -34,6 +34,7 @@ from db import (
     reset_draft_to_pending,
     reset_all_drafts_to_pending,
     clear_mock_posts,
+    wipe_all_database_posts,
     get_candidates_without_draft,
     update_draft_review,
     get_stats,
@@ -169,6 +170,15 @@ def api_reset_queue(req: Optional[ResetQueueRequest] = None):
 def api_clear_mock():
     clear_mock_posts()
     return {"status": "ok", "stats": get_stats()}
+
+@app.post("/api/wipe-database")
+def api_wipe_database():
+    wipe_all_database_posts()
+    return {
+        "status": "ok",
+        "message": "Seluruh data post dan draf di database berhasil direset bersih.",
+        "stats": get_stats()
+    }
 
 @app.post("/api/trigger-meta-test-calls")
 def api_trigger_meta_test_calls():
@@ -424,6 +434,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <button onclick="clearMockData()" class="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 transition shadow-sm">
                     <span>🧹</span> Hapus Data Mock
                 </button>
+                <button onclick="wipeDatabase()" class="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded border border-rose-300 bg-rose-50 text-rose-700 hover:bg-rose-100 transition shadow-sm" title="Hapus semua post dan draf di basis data agar bersih kembali ke 0">
+                    <span>🗑️</span> Reset Total Basis Data
+                </button>
             </div>
         </div>
 
@@ -638,6 +651,23 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     </button>
                 </div>
                 <div id="meta-test-result" class="hidden mt-3 p-3 bg-white rounded border border-indigo-200 text-xs font-mono text-slate-800 overflow-x-auto"></div>
+            </div>
+
+            <!-- Zona Bahaya: Reset Total Database -->
+            <div class="bg-rose-50/70 border border-rose-200 rounded-lg p-5">
+                <div class="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                    <div>
+                        <h3 class="font-bold text-rose-950 flex items-center gap-2">
+                            <span>🗑️</span> Zona Bahaya: Reset & Hapus Seluruh Data Postingan
+                        </h3>
+                        <p class="text-xs text-rose-800 mt-1">
+                            Tindakan ini akan mengosongkan tabel postingan mentah dan draf di basis data (semua statistik kembali ke 0). Kredensial API Anda tetap tersimpan aman.
+                        </p>
+                    </div>
+                    <button type="button" onclick="wipeDatabase()" class="inline-flex items-center gap-1.5 text-xs font-semibold px-4 py-2 rounded-md bg-rose-600 hover:bg-rose-700 text-white transition shadow-sm whitespace-nowrap">
+                        <span>⚠️</span> Hapus & Kosongkan Database
+                    </button>
+                </div>
             </div>
 
             <!-- Informasi Prinsip & Etika PRD -->
@@ -1343,6 +1373,20 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 switchTab('review');
             } catch (e) {
                 showToast('Gagal membersihkan data mock');
+            }
+        }
+
+        async function wipeDatabase() {
+            if (!confirm('PERINGATAN: Apakah Anda yakin ingin MENGHAPUS SEMUA data post dan draf di database? Seluruh metrik statistik akan kembali menjadi 0.')) return;
+            try {
+                const res = await authFetch('/api/wipe-database', { method: 'POST' });
+                const data = await res.json();
+                showToast(data.message || 'Seluruh data di database berhasil direset bersih!');
+                fetchStats();
+                loadQueue();
+                switchTab('review');
+            } catch (e) {
+                showToast('Gagal mengosongkan database');
             }
         }
 
