@@ -33,6 +33,7 @@ from db import (
 from fetch_threads import run_fetch
 from classifier import classify_pending_posts
 from generate_draft import process_candidates
+from credentials_checker import validate_threads_credentials, validate_ai_credentials
 
 # Inisialisasi basis data
 init_db()
@@ -51,6 +52,14 @@ class SettingsRequest(BaseModel):
     ai_model: Optional[str] = "claude-3-5-sonnet-20241022"
     ai_base_url: Optional[str] = ""
     score_threshold: Optional[int] = 3
+
+class ValidateRequest(BaseModel):
+    target: str  # "threads" | "ai"
+    threads_token: Optional[str] = ""
+    threads_user_id: Optional[str] = "me"
+    ai_api_key: Optional[str] = ""
+    ai_model: Optional[str] = "claude-3-5-sonnet-20241022"
+    ai_base_url: Optional[str] = ""
 
 @app.get("/api/stats")
 def api_stats():
@@ -142,6 +151,22 @@ def api_save_settings(req: SettingsRequest):
             "score_threshold": get_score_threshold()
         }
     }
+
+@app.post("/api/validate-key")
+def api_validate_key(req: ValidateRequest):
+    if req.target == "threads":
+        return validate_threads_credentials(
+            token=req.threads_token or "",
+            user_id=req.threads_user_id or "me"
+        )
+    elif req.target == "ai":
+        return validate_ai_credentials(
+            api_key=req.ai_api_key or "",
+            model=req.ai_model or "claude-3-5-sonnet-20241022",
+            base_url=req.ai_base_url or ""
+        )
+    else:
+        raise HTTPException(status_code=400, detail="Target validasi tidak dikenal")
 
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="id">
@@ -241,8 +266,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             <div class="bg-white border border-slate-200 rounded-lg p-6 shadow-sm">
                 <div class="flex flex-wrap items-center justify-between pb-4 border-b border-slate-200 mb-6 gap-2">
                     <div>
-                        <h2 class="text-base font-bold text-slate-900">Pengaturan Kredensial & Model</h2>
-                        <p class="text-xs text-slate-500 mt-0.5">Ubah token Threads API dan AI langsung dari formulir ini tanpa harus mengedit berkas .env.</p>
+                        <h2 class="text-base font-bold text-slate-900">Pengaturan Kredensial & Validasi API</h2>
+                        <p class="text-xs text-slate-500 mt-0.5">Ubah dan uji langsung kredensial Threads API serta AI Anda dengan umpan balik status instan.</p>
                     </div>
                     <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200">
                         Aktif Otomatis
@@ -251,47 +276,63 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
                 <form onsubmit="event.preventDefault(); saveSettings();" class="space-y-6">
                     <!-- Bagian Threads API -->
-                    <div>
-                        <h3 class="text-sm font-bold text-slate-900 mb-3 flex items-center gap-2">
-                            <span class="text-base">🧵</span> Kredensial Meta Threads API
-                        </h3>
+                    <div class="bg-slate-50/70 p-4 rounded-lg border border-slate-200">
+                        <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+                            <h3 class="text-sm font-bold text-slate-900 flex items-center gap-2">
+                                <span class="text-base">🧵</span> Kredensial Meta Threads API
+                            </h3>
+                            <button type="button" id="btn-test-threads" onclick="testThreadsConnection()" class="text-xs font-semibold px-3 py-1.5 rounded border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 transition flex items-center gap-1.5 shadow-sm">
+                                <span>🔍</span> Uji Koneksi Threads
+                            </button>
+                        </div>
+
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div>
                                 <label class="block text-xs font-semibold text-slate-700 mb-1">Threads Access Token</label>
                                 <div class="relative">
-                                    <input type="password" id="cfg-threads-token" class="w-full text-sm font-mono p-2.5 pr-10 border border-slate-300 rounded-md focus:ring-2 focus:ring-emerald-600 focus:outline-none" placeholder="Masukkan token Graph API resmi">
+                                    <input type="password" id="cfg-threads-token" oninput="onThreadsInput(this.value)" class="w-full text-sm font-mono p-2.5 pr-10 border border-slate-300 rounded-md bg-white focus:ring-2 focus:ring-emerald-600 focus:outline-none" placeholder="Masukkan token Graph API resmi">
                                     <button type="button" onclick="togglePasswordVisibility('cfg-threads-token')" class="absolute inset-y-0 right-0 px-3 flex items-center text-slate-400 hover:text-slate-600" title="Tampilkan/Sembunyikan">
                                         👁️
                                     </button>
                                 </div>
-                                <p class="text-xs text-slate-500 mt-1">Token resmi dari Meta Developers Dashboard (Threads Graph API).</p>
+                                <p id="hint-threads-token" class="text-xs text-slate-500 mt-1">Token resmi dari Meta Developers Dashboard (Threads Graph API).</p>
                             </div>
 
                             <div>
                                 <label class="block text-xs font-semibold text-slate-700 mb-1">Threads User ID</label>
-                                <input type="text" id="cfg-threads-user-id" class="w-full text-sm p-2.5 border border-slate-300 rounded-md focus:ring-2 focus:ring-emerald-600 focus:outline-none" placeholder="me">
+                                <input type="text" id="cfg-threads-user-id" class="w-full text-sm p-2.5 border border-slate-300 rounded-md bg-white focus:ring-2 focus:ring-emerald-600 focus:outline-none" placeholder="me">
                                 <p class="text-xs text-slate-500 mt-1">Gunakan 'me' untuk akun pemilik token atau isi user ID khusus.</p>
                             </div>
                         </div>
+
+                        <!-- Feedback Card Threads -->
+                        <div id="feedback-threads" class="hidden mt-3 p-3 rounded-md text-xs border transition"></div>
                     </div>
 
-                    <hr class="border-slate-200">
-
                     <!-- Bagian AI API -->
-                    <div>
-                        <h3 class="text-sm font-bold text-slate-900 mb-3 flex items-center gap-2">
-                            <span class="text-base">🤖</span> Kredensial AI Model
-                        </h3>
+                    <div class="bg-slate-50/70 p-4 rounded-lg border border-slate-200">
+                        <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+                            <div class="flex items-center gap-2">
+                                <h3 class="text-sm font-bold text-slate-900 flex items-center gap-2">
+                                    <span class="text-base">🤖</span> Kredensial AI Model
+                                </h3>
+                                <span id="badge-ai-provider" class="hidden text-xs font-semibold px-2 py-0.5 rounded"></span>
+                            </div>
+                            <button type="button" id="btn-test-ai" onclick="testAiConnection()" class="text-xs font-semibold px-3 py-1.5 rounded border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 transition flex items-center gap-1.5 shadow-sm">
+                                <span>🔍</span> Uji Koneksi AI
+                            </button>
+                        </div>
+
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div>
                                 <label class="block text-xs font-semibold text-slate-700 mb-1">AI API Key</label>
                                 <div class="relative">
-                                    <input type="password" id="cfg-ai-key" class="w-full text-sm font-mono p-2.5 pr-10 border border-slate-300 rounded-md focus:ring-2 focus:ring-emerald-600 focus:outline-none" placeholder="sk-ant-... atau sk-...">
+                                    <input type="password" id="cfg-ai-key" oninput="onAiInput(this.value)" class="w-full text-sm font-mono p-2.5 pr-10 border border-slate-300 rounded-md bg-white focus:ring-2 focus:ring-emerald-600 focus:outline-none" placeholder="sk-ant-... atau sk-...">
                                     <button type="button" onclick="togglePasswordVisibility('cfg-ai-key')" class="absolute inset-y-0 right-0 px-3 flex items-center text-slate-400 hover:text-slate-600" title="Tampilkan/Sembunyikan">
                                         👁️
                                     </button>
                                 </div>
-                                <p class="text-xs text-slate-500 mt-1">Kunci API dari Anthropic, OpenAI, atau OpenRouter.</p>
+                                <p id="hint-ai-key" class="text-xs text-slate-500 mt-1">Kunci API dari Anthropic, OpenAI, atau OpenRouter.</p>
                             </div>
 
                             <div>
@@ -315,23 +356,24 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                                 <p class="text-xs text-slate-500 mt-1">Hanya diisi jika menggunakan reverse proxy atau provider pihak ketiga seperti OpenRouter.</p>
                             </div>
                         </div>
+
+                        <!-- Feedback Card AI -->
+                        <div id="feedback-ai" class="hidden mt-3 p-3 rounded-md text-xs border transition"></div>
                     </div>
 
-                    <hr class="border-slate-200">
-
                     <!-- Bagian Filter Scoring -->
-                    <div>
+                    <div class="bg-slate-50/70 p-4 rounded-lg border border-slate-200">
                         <h3 class="text-sm font-bold text-slate-900 mb-3 flex items-center gap-2">
                             <span class="text-base">⚖️</span> Parameter Filter & Scoring
                         </h3>
                         <div class="max-w-xs">
                             <label class="block text-xs font-semibold text-slate-700 mb-1">Ambang Batas Skor Relevansi</label>
-                            <input type="number" id="cfg-score-threshold" min="1" max="10" value="3" class="w-full text-sm p-2.5 border border-slate-300 rounded-md focus:ring-2 focus:ring-emerald-600 focus:outline-none">
+                            <input type="number" id="cfg-score-threshold" min="1" max="10" value="3" class="w-full text-sm p-2.5 border border-slate-300 rounded-md bg-white focus:ring-2 focus:ring-emerald-600 focus:outline-none">
                             <p class="text-xs text-slate-500 mt-1">Nilai minimum agar post diproses ke tahap review AI (Default: 3).</p>
                         </div>
                     </div>
 
-                    <div class="pt-4 border-t border-slate-200 flex items-center gap-3">
+                    <div class="pt-2 flex items-center gap-3">
                         <button type="submit" id="btn-save-settings" class="bg-emerald-700 hover:bg-emerald-800 text-white font-medium text-sm px-5 py-2.5 rounded-md transition shadow-sm">
                             Simpan Pengaturan
                         </button>
@@ -423,13 +465,149 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             }
         }
 
+        function onThreadsInput(val) {
+            const hint = document.getElementById('hint-threads-token');
+            const trimmed = val.trim();
+            if (!trimmed) {
+                hint.innerText = 'Belum diisi. Masukkan token jika ingin mengambil data langsung dari Threads.';
+                hint.className = 'text-xs text-slate-500 mt-1';
+            } else if (trimmed.length < 25) {
+                hint.innerText = 'Panjang token saat ini: ' + trimmed.length + ' karakter (Token Meta biasanya > 30 karakter).';
+                hint.className = 'text-xs text-amber-600 mt-1';
+            } else {
+                hint.innerText = 'Panjang token sesuai (' + trimmed.length + ' karakter). Klik "Uji Koneksi Threads" untuk memverifikasi keaktifan token.';
+                hint.className = 'text-xs text-emerald-700 mt-1 font-medium';
+            }
+        }
+
+        function onAiInput(val) {
+            const hint = document.getElementById('hint-ai-key');
+            const badge = document.getElementById('badge-ai-provider');
+            const trimmed = val.trim();
+
+            if (!trimmed) {
+                badge.classList.add('hidden');
+                hint.innerText = 'Kunci API belum diisi. Sistem akan menggunakan mode fallback deterministik yang aman.';
+                hint.className = 'text-xs text-slate-500 mt-1';
+                return;
+            }
+
+            badge.classList.remove('hidden');
+            if (trimmed.startsWith('sk-ant-')) {
+                badge.className = 'text-xs font-semibold px-2 py-0.5 rounded bg-purple-100 text-purple-800 border border-purple-200';
+                badge.innerText = 'Format: Anthropic Claude Key';
+                hint.innerText = 'Format API Key Anthropic terdeteksi valid.';
+                hint.className = 'text-xs text-purple-700 mt-1 font-medium';
+            } else if (trimmed.startsWith('sk-or-')) {
+                badge.className = 'text-xs font-semibold px-2 py-0.5 rounded bg-sky-100 text-sky-800 border border-sky-200';
+                badge.innerText = 'Format: OpenRouter Key';
+                hint.innerText = 'Format API Key OpenRouter terdeteksi valid.';
+                hint.className = 'text-xs text-sky-700 mt-1 font-medium';
+            } else if (trimmed.startsWith('sk-')) {
+                badge.className = 'text-xs font-semibold px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-200';
+                badge.innerText = 'Format: OpenAI / Kompatibel';
+                hint.innerText = 'Format API Key OpenAI / standar terdeteksi valid.';
+                hint.className = 'text-xs text-emerald-700 mt-1 font-medium';
+            } else {
+                badge.className = 'text-xs font-semibold px-2 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200';
+                badge.innerText = 'Format: Kustom (' + trimmed.length + ' karakter)';
+                hint.innerText = 'Kunci API kustom. Klik "Uji Koneksi AI" untuk memeriksa autentikasi ke server.';
+                hint.className = 'text-xs text-slate-600 mt-1';
+            }
+        }
+
+        async function testThreadsConnection() {
+            const btn = document.getElementById('btn-test-threads');
+            const fb = document.getElementById('feedback-threads');
+            const token = document.getElementById('cfg-threads-token').value.trim();
+            const userId = document.getElementById('cfg-threads-user-id').value.trim() || 'me';
+
+            btn.disabled = true;
+            btn.innerHTML = '<span>⏳</span> Menguji...';
+            fb.classList.remove('hidden');
+            fb.className = 'mt-3 p-3 rounded-md text-xs border bg-slate-100 border-slate-300 text-slate-700';
+            fb.innerHTML = '<strong>Memeriksa koneksi:</strong> Mengirim permintaan uji ke Meta Threads Graph API...';
+
+            try {
+                const res = await fetch('/api/validate-key', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        target: 'threads',
+                        threads_token: token,
+                        threads_user_id: userId
+                    })
+                });
+                const data = await res.json();
+                if (data.valid) {
+                    fb.className = 'mt-3 p-3 rounded-md text-xs border bg-emerald-50 border-emerald-300 text-emerald-900';
+                    fb.innerHTML = '<strong>Koneksi Sukses:</strong> ' + data.message;
+                } else {
+                    fb.className = 'mt-3 p-3 rounded-md text-xs border bg-red-50 border-red-300 text-red-900';
+                    fb.innerHTML = '<strong>Validasi Gagal:</strong> ' + data.message;
+                }
+            } catch (e) {
+                fb.className = 'mt-3 p-3 rounded-md text-xs border bg-red-50 border-red-300 text-red-900';
+                fb.innerHTML = '<strong>Kesalahan Jaringan:</strong> Tidak dapat menghubungi server untuk validasi.';
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '<span>🔍</span> Uji Koneksi Threads';
+            }
+        }
+
+        async function testAiConnection() {
+            const btn = document.getElementById('btn-test-ai');
+            const fb = document.getElementById('feedback-ai');
+            const apiKey = document.getElementById('cfg-ai-key').value.trim();
+            const selectEl = document.getElementById('cfg-ai-model-select');
+            const customEl = document.getElementById('cfg-ai-model-custom');
+            const chosenModel = (selectEl.value === 'custom') ? customEl.value.trim() : selectEl.value;
+            const baseUrl = document.getElementById('cfg-ai-base-url').value.trim();
+
+            btn.disabled = true;
+            btn.innerHTML = '<span>⏳</span> Menguji...';
+            fb.classList.remove('hidden');
+            fb.className = 'mt-3 p-3 rounded-md text-xs border bg-slate-100 border-slate-300 text-slate-700';
+            fb.innerHTML = '<strong>Memeriksa autentikasi:</strong> Menghubungi endpoint model ' + chosenModel + '...';
+
+            try {
+                const res = await fetch('/api/validate-key', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        target: 'ai',
+                        ai_api_key: apiKey,
+                        ai_model: chosenModel,
+                        ai_base_url: baseUrl
+                    })
+                });
+                const data = await res.json();
+                if (data.valid) {
+                    fb.className = 'mt-3 p-3 rounded-md text-xs border bg-emerald-50 border-emerald-300 text-emerald-900';
+                    fb.innerHTML = '<strong>Autentikasi Sukses:</strong> ' + data.message;
+                } else {
+                    fb.className = 'mt-3 p-3 rounded-md text-xs border bg-red-50 border-red-300 text-red-900';
+                    fb.innerHTML = '<strong>Validasi Gagal:</strong> ' + data.message;
+                }
+            } catch (e) {
+                fb.className = 'mt-3 p-3 rounded-md text-xs border bg-red-50 border-red-300 text-red-900';
+                fb.innerHTML = '<strong>Kesalahan Jaringan:</strong> Tidak dapat menghubungi server untuk validasi AI.';
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '<span>🔍</span> Uji Koneksi AI';
+            }
+        }
+
         async function loadSettings() {
             try {
                 const res = await fetch('/api/settings');
                 const data = await res.json();
-                document.getElementById('cfg-threads-token').value = data.threads_token || '';
+                const tokenInput = document.getElementById('cfg-threads-token');
+                const keyInput = document.getElementById('cfg-ai-key');
+
+                tokenInput.value = data.threads_token || '';
                 document.getElementById('cfg-threads-user-id').value = data.threads_user_id || 'me';
-                document.getElementById('cfg-ai-key').value = data.ai_api_key || '';
+                keyInput.value = data.ai_api_key || '';
                 document.getElementById('cfg-ai-base-url').value = data.ai_base_url || '';
                 document.getElementById('cfg-score-threshold').value = data.score_threshold || 3;
 
@@ -452,6 +630,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 } else {
                     customEl.classList.add('hidden');
                 }
+
+                // Inisialisasi tampilan hint format
+                onThreadsInput(tokenInput.value);
+                onAiInput(keyInput.value);
             } catch (e) {
                 console.error(e);
             }
@@ -483,11 +665,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             const selectEl = document.getElementById('cfg-ai-model-select');
             const customEl = document.getElementById('cfg-ai-model-custom');
             const chosenModel = (selectEl.value === 'custom') ? customEl.value.trim() : selectEl.value;
+            const token = document.getElementById('cfg-threads-token').value.trim();
+            const apiKey = document.getElementById('cfg-ai-key').value.trim();
 
             const payload = {
-                threads_token: document.getElementById('cfg-threads-token').value.trim(),
+                threads_token: token,
                 threads_user_id: document.getElementById('cfg-threads-user-id').value.trim() || 'me',
-                ai_api_key: document.getElementById('cfg-ai-key').value.trim(),
+                ai_api_key: apiKey,
                 ai_model: chosenModel || 'claude-3-5-sonnet-20241022',
                 ai_base_url: document.getElementById('cfg-ai-base-url').value.trim(),
                 score_threshold: parseInt(document.getElementById('cfg-score-threshold').value, 10) || 3
@@ -502,6 +686,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 const data = await res.json();
                 showToast(data.message || 'Pengaturan berhasil disimpan!');
                 fetchStats();
+
+                // Picu uji koneksi otomatis jika ada kunci yang diisi
+                if (token) testThreadsConnection();
+                if (apiKey) testAiConnection();
             } catch (e) {
                 showToast('Gagal menyimpan pengaturan');
             } finally {

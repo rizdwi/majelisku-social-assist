@@ -19,6 +19,7 @@ from db import (
 )
 from fetch_threads import run_fetch
 from classifier import classify_pending_posts
+from credentials_checker import validate_threads_credentials, validate_ai_credentials
 from generate_draft import process_candidates
 
 # Inisialisasi konfigurasi halaman Streamlit
@@ -341,6 +342,29 @@ with tab_settings:
             })
             st.success("Pengaturan berhasil disimpan dan langsung aktif!")
             st.rerun()
+
+    # Bagian Uji Validasi Koneksi
+    st.subheader("Uji Validasi Koneksi")
+    st.caption("Periksa status keaktifan token dan ketersediaan model AI saat ini.")
+
+    col_v1, col_v2 = st.columns(2)
+    with col_v1:
+        if st.button("Uji Koneksi Threads API", use_container_width=True):
+            with st.spinner("Menghubungi Meta Threads API..."):
+                res = validate_threads_credentials(get_threads_token(), get_threads_user_id())
+                if res["valid"]:
+                    st.success(res["message"])
+                else:
+                    st.error(res["message"])
+
+    with col_v2:
+        if st.button("Uji Koneksi AI API", use_container_width=True):
+            with st.spinner("Menghubungi server API AI..."):
+                res = validate_ai_credentials(get_ai_api_key(), get_ai_model(), get_ai_base_url())
+                if res["valid"]:
+                    st.success(res["message"])
+                else:
+                    st.error(res["message"])
 
     st.divider()
     st.subheader("Ringkasan Filter dan Aktivitas")
