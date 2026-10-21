@@ -30,7 +30,7 @@ AI_MODEL = os.getenv("AI_MODEL", "claude-3-5-sonnet-20241022").strip()
 AI_BASE_URL = os.getenv("AI_BASE_URL", "").strip()
 
 # Parameter Filter & Scheduler
-SCORE_THRESHOLD = int(os.getenv("SCORE_THRESHOLD", "3"))
+SCORE_THRESHOLD = int(os.getenv("SCORE_THRESHOLD", "2"))
 FETCH_INTERVAL_HOURS = int(os.getenv("FETCH_INTERVAL_HOURS", "1"))
 
 def get_config_val(key: str, default: str = "") -> str:
@@ -66,10 +66,10 @@ def get_ai_base_url() -> str:
 
 def get_score_threshold() -> int:
     try:
-        raw = get_config_val("SCORE_THRESHOLD", "3")
+        raw = get_config_val("SCORE_THRESHOLD", "2")
         return int(raw)
     except Exception:
-        return 3
+        return 2
 
 def sync_to_env_file(settings: dict) -> None:
     if os.getenv("VERCEL"):

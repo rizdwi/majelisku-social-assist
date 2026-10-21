@@ -39,7 +39,10 @@ from db import (
     get_candidates_without_draft,
     update_draft_review,
     get_stats,
-    get_setting
+    get_setting,
+    get_all_raw_posts,
+    force_candidate_and_draft,
+    reclassify_all_raw_posts
 )
 from fetch_threads import run_fetch
 from classifier import classify_pending_posts
@@ -133,6 +136,29 @@ def api_approved():
 @app.get("/api/skipped")
 def api_skipped():
     return get_skipped_queue()
+
+@app.get("/api/raw-posts")
+def api_raw_posts():
+    return get_all_raw_posts()
+
+class ForceCandidateRequest(BaseModel):
+    post_id: str
+
+@app.post("/api/force-candidate")
+def api_force_candidate(payload: ForceCandidateRequest):
+    if not payload.post_id:
+        raise HTTPException(status_code=400, detail="post_id wajib diisi")
+    force_candidate_and_draft(payload.post_id)
+    return {"status": "ok", "stats": get_stats()}
+
+class ReclassifyRequest(BaseModel):
+    threshold: Optional[int] = 2
+
+@app.post("/api/reclassify")
+def api_reclassify(payload: Optional[ReclassifyRequest] = None):
+    th = payload.threshold if payload and payload.threshold is not None else 2
+    count = reclassify_all_raw_posts(new_threshold=th)
+    return {"status": "ok", "reclassified": count, "stats": get_stats()}
 
 @app.post("/api/review")
 def api_review(req: ReviewRequest):
@@ -403,8 +429,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <main class="max-w-6xl mx-auto px-4 py-6">
         <!-- Status Bar & Metrics -->
         <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
-            <div class="bg-white border border-slate-200 p-4 rounded-lg">
-                <div class="text-xs text-slate-500 font-medium">Total Post Terambil</div>
+            <div onclick="switchTab('raw')" class="bg-white border border-slate-200 hover:border-emerald-500 p-4 rounded-lg cursor-pointer transition shadow-xs group">
+                <div class="flex items-center justify-between">
+                    <div class="text-xs text-slate-500 font-medium group-hover:text-emerald-700">Total Post Terambil</div>
+                    <span class="text-xs text-emerald-600 font-medium opacity-0 group-hover:opacity-100 transition">Lihat &rarr;</span>
+                </div>
                 <div id="stat-total" class="text-xl font-bold text-slate-900 mt-1">0</div>
             </div>
             <div class="bg-white border border-slate-200 p-4 rounded-lg">
@@ -426,6 +455,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             <button id="tab-review-btn" onclick="switchTab('review')" class="py-3 px-1 border-b-2 border-emerald-700 font-semibold text-sm text-emerald-800 flex items-center gap-2">
                 Antrean Review
                 <span id="badge-review-count" class="bg-emerald-100 text-emerald-800 text-xs px-2 py-0.5 rounded-full font-bold">0</span>
+            </button>
+            <button id="tab-raw-btn" onclick="switchTab('raw')" class="py-3 px-1 border-b-2 border-transparent font-medium text-sm text-slate-600 hover:text-slate-900 flex items-center gap-2">
+                Semua Post Terambil
+                <span id="badge-raw-count" class="bg-slate-100 text-slate-700 text-xs px-2 py-0.5 rounded-full font-bold">0</span>
             </button>
             <button id="tab-approved-btn" onclick="switchTab('approved')" class="py-3 px-1 border-b-2 border-transparent font-medium text-sm text-slate-600 hover:text-slate-900 flex items-center gap-2">
                 Siap Diposting
@@ -451,6 +484,33 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 </p>
             </div>
             <div id="review-list" class="space-y-4"></div>
+        </div>
+
+        <!-- Section: Semua Post Terambil (Raw Posts) -->
+        <div id="view-raw" class="hidden space-y-4">
+            <div class="bg-white border border-slate-200 rounded-lg p-4 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                    <h3 class="text-sm font-bold text-slate-900">Daftar Seluruh Postingan Terambil dari Threads</h3>
+                    <p class="text-xs text-slate-500 mt-0.5">Postingan yang ditarik via Threads API beserta skor relevansi. Klik tombol aksi pada kartu untuk memasukkan postingan ke Antrean Review.</p>
+                </div>
+                <div class="flex flex-wrap items-center gap-2">
+                    <button onclick="reclassifyAll(2)" class="text-xs px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white rounded font-medium transition shadow-xs">
+                        ⚡ Nilai Ulang (Ambang Batas 2)
+                    </button>
+                    <button onclick="reclassifyAll(1)" class="text-xs px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded font-medium transition shadow-xs">
+                        ⚡ Masukkan Semua (Ambang Batas 1)
+                    </button>
+                </div>
+            </div>
+            <div id="raw-loading" class="text-center py-12 text-slate-500">Memuat seluruh post...</div>
+            <div id="raw-empty" class="hidden text-center py-12 bg-white border border-dashed border-slate-300 rounded-lg p-6">
+                <div class="text-3xl mb-2">📥</div>
+                <h3 class="text-base font-bold text-slate-800">Belum ada post yang ditarik</h3>
+                <p class="text-xs text-slate-500 max-w-md mx-auto mt-1">
+                    Klik tombol "Jalankan Pipeline" di navbar atas untuk menarik postingan dari akun Threads Anda.
+                </p>
+            </div>
+            <div id="raw-list" class="space-y-4"></div>
         </div>
 
         <!-- Section 2: Siap Diposting -->
@@ -721,11 +781,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         function switchTab(tab) {
             currentTab = tab;
             document.getElementById('view-review').classList.toggle('hidden', tab !== 'review');
+            document.getElementById('view-raw').classList.toggle('hidden', tab !== 'raw');
             document.getElementById('view-approved').classList.toggle('hidden', tab !== 'approved');
             document.getElementById('view-skipped').classList.toggle('hidden', tab !== 'skipped');
             document.getElementById('view-settings').classList.toggle('hidden', tab !== 'settings');
 
             const btnRev = document.getElementById('tab-review-btn');
+            const btnRaw = document.getElementById('tab-raw-btn');
             const btnApp = document.getElementById('tab-approved-btn');
             const btnSkip = document.getElementById('tab-skipped-btn');
             const btnSet = document.getElementById('tab-settings-btn');
@@ -734,11 +796,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             const inactiveClass = 'py-3 px-1 border-b-2 border-transparent font-medium text-sm text-slate-600 hover:text-slate-900 flex items-center gap-2';
 
             btnRev.className = (tab === 'review') ? activeClass : inactiveClass;
+            btnRaw.className = (tab === 'raw') ? activeClass : inactiveClass;
             btnApp.className = (tab === 'approved') ? activeClass : inactiveClass;
             btnSkip.className = (tab === 'skipped') ? activeClass : inactiveClass;
             btnSet.className = (tab === 'settings') ? activeClass.replace('gap-2', 'gap-1.5') : inactiveClass.replace('gap-2', 'gap-1.5');
 
             if (tab === 'review') loadQueue();
+            if (tab === 'raw') loadRawPosts();
             if (tab === 'approved') loadApproved();
             if (tab === 'skipped') loadSkipped();
             if (tab === 'settings') loadSettings();
@@ -753,6 +817,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 document.getElementById('stat-pending').innerText = data.pending_review;
                 document.getElementById('stat-approved').innerText = data.approved;
                 document.getElementById('badge-review-count').innerText = data.pending_review;
+                document.getElementById('badge-raw-count').innerText = data.total_raw;
                 document.getElementById('badge-approved-count').innerText = data.approved;
                 document.getElementById('badge-skipped-count').innerText = data.skipped || 0;
 
@@ -1092,7 +1157,26 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 document.getElementById('review-loading').classList.add('hidden');
 
                 if (items.length === 0) {
-                    document.getElementById('review-empty').classList.remove('hidden');
+                    const emptyEl = document.getElementById('review-empty');
+                    emptyEl.classList.remove('hidden');
+                    const totalRaw = parseInt(document.getElementById('stat-total').innerText, 10) || 0;
+                    if (totalRaw > 0) {
+                        emptyEl.innerHTML = `
+                            <div class="text-3xl mb-2">📬</div>
+                            <h3 class="text-base font-bold text-slate-800">Antrean Review Belum Berisi Post</h3>
+                            <p class="text-xs text-slate-600 max-w-md mx-auto mt-1 mb-4 leading-relaxed">
+                                Terdapat <strong>${totalRaw} post</strong> yang sudah berhasil ditarik dari Threads. Namun sistem filter menilai skornya di bawah ambang batas relevansi, sehingga belum otomatis masuk ke antrean draf.
+                            </p>
+                            <div class="flex flex-wrap items-center justify-center gap-2">
+                                <button onclick="switchTab('raw')" class="text-xs px-3.5 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded font-medium transition shadow-xs">
+                                    👁️ Buka Tab Semua Post Terambil (${totalRaw})
+                                </button>
+                                <button onclick="reclassifyAll(1)" class="text-xs px-3.5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded font-medium transition shadow-xs">
+                                    ⚡ Masukkan Semua ke Antrean (Ambang Batas 1)
+                                </button>
+                            </div>
+                        `;
+                    }
                     return;
                 }
 
@@ -1142,6 +1226,120 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             } catch (e) {
                 console.error(e);
                 document.getElementById('review-loading').innerText = 'Gagal memuat antrean.';
+            }
+        }
+
+        async function loadRawPosts() {
+            const loading = document.getElementById('raw-loading');
+            const empty = document.getElementById('raw-empty');
+            const listEl = document.getElementById('raw-list');
+            loading.classList.remove('hidden');
+            empty.classList.add('hidden');
+            listEl.innerHTML = '';
+
+            try {
+                const res = await authFetch('/api/raw-posts');
+                const items = await res.json();
+                loading.classList.add('hidden');
+
+                if (items.length === 0) {
+                    empty.classList.remove('hidden');
+                    return;
+                }
+
+                items.forEach(item => {
+                    const card = document.createElement('div');
+                    card.className = 'bg-white border border-slate-200 rounded-lg p-5 shadow-xs space-y-3';
+
+                    let statusBadge = '';
+                    if (item.status === 'candidate') {
+                        statusBadge = `<span class="px-2.5 py-1 bg-emerald-100 text-emerald-800 text-xs font-semibold rounded-full border border-emerald-200">✅ Lolos Kandidat (Skor: ${item.score})</span>`;
+                    } else if (item.status === 'rejected') {
+                        statusBadge = `<span class="px-2.5 py-1 bg-amber-100 text-amber-800 text-xs font-semibold rounded-full border border-amber-200">⚠️ Disaring Keluar (Skor: ${item.score})</span>`;
+                    } else {
+                        statusBadge = `<span class="px-2.5 py-1 bg-slate-100 text-slate-700 text-xs font-semibold rounded-full border border-slate-200">⏳ Pending (Skor: ${item.score})</span>`;
+                    }
+
+                    let reviewBadge = '';
+                    if (item.review_status === 'approved') {
+                        reviewBadge = `<span class="text-xs font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded">Disetujui</span>`;
+                    } else if (item.review_status === 'skipped') {
+                        reviewBadge = `<span class="text-xs font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded">Dilewati</span>`;
+                    } else if (item.review_status === 'pending_review') {
+                        reviewBadge = `<span class="text-xs font-semibold text-blue-700 bg-blue-50 px-2 py-0.5 rounded">Ada di Antrean Review</span>`;
+                    }
+
+                    let actionHtml = '';
+                    if (item.review_status === 'pending_review') {
+                        actionHtml = `<button onclick="switchTab('review')" class="text-xs px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 font-medium rounded transition">Buka di Antrean Review &rarr;</button>`;
+                    } else if (item.status === 'rejected' || !item.review_status) {
+                        actionHtml = `<button onclick="forceCandidate('${item.post_id}')" class="text-xs px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white font-medium rounded transition shadow-xs">➕ Masukkan ke Antrean Review & Buat Draft AI</button>`;
+                    }
+
+                    card.innerHTML = `
+                        <div class="flex flex-wrap items-center justify-between gap-2">
+                            <div class="flex items-center gap-2">
+                                <span class="font-bold text-slate-800 text-sm">@${item.author}</span>
+                                <span class="text-xs text-slate-400">${(item.created_at || '').substring(0, 19).replace('T', ' ')}</span>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                ${statusBadge}
+                                ${reviewBadge}
+                            </div>
+                        </div>
+                        <div class="text-sm text-slate-700 bg-slate-50 p-3.5 rounded-md border border-slate-100 leading-relaxed">
+                            "${item.text}"
+                        </div>
+                        ${item.draft_reply ? `
+                        <div class="text-xs bg-emerald-50/60 p-2.5 rounded border border-emerald-100 text-slate-700">
+                            <strong>Draf AI:</strong> ${item.draft_reply}
+                        </div>` : ''}
+                        <div class="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-100">
+                            <a href="${item.url}" target="_blank" rel="noopener noreferrer" class="text-xs font-medium text-emerald-700 hover:underline">
+                                Buka postingan asli di Threads &rarr;
+                            </a>
+                            <div>${actionHtml}</div>
+                        </div>
+                    `;
+                    listEl.appendChild(card);
+                });
+            } catch (e) {
+                console.error(e);
+                loading.innerText = 'Gagal memuat daftar post terambil.';
+            }
+        }
+
+        async function forceCandidate(postId) {
+            showToast('Menjadikan kandidat dan meminta AI membuat draft balasan...');
+            try {
+                const res = await authFetch('/api/force-candidate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ post_id: postId })
+                });
+                const data = await res.json();
+                showToast('Post berhasil dimasukkan ke Antrean Review dengan draf AI!');
+                fetchStats();
+                switchTab('review');
+            } catch (e) {
+                showToast('Gagal memproses post ke antrean review');
+            }
+        }
+
+        async function reclassifyAll(threshold = 2) {
+            showToast(`Menilai ulang seluruh post dengan ambang batas skor ${threshold}...`);
+            try {
+                const res = await authFetch('/api/reclassify', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ threshold: threshold })
+                });
+                const data = await res.json();
+                showToast(`Selesai: ${data.reclassified} post dinilai ulang dan draf AI disiapkan!`);
+                fetchStats();
+                switchTab('review');
+            } catch (e) {
+                showToast('Gagal menilai ulang post');
             }
         }
 

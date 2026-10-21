@@ -262,3 +262,41 @@ def get_all_settings(db_path: Optional[str] = None) -> Dict[str, str]:
         cursor = conn.cursor()
         cursor.execute("SELECT key, value FROM settings")
         return {row["key"]: row["value"] for row in cursor.fetchall()}
+
+def get_all_raw_posts(db_path: Optional[str] = None) -> List[Dict[str, Any]]:
+    with get_db(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT r.post_id, r.author, r.text, r.url, r.created_at, r.fetched_at, r.score, r.status,
+                   d.review_status, d.draft_reply, d.ai_reasoning
+            FROM raw_posts r
+            LEFT JOIN drafts d ON r.post_id = d.post_id
+            ORDER BY r.created_at DESC, r.fetched_at DESC
+        """)
+        return [dict(row) for row in cursor.fetchall()]
+
+def force_candidate_and_draft(post_id: str, db_path: Optional[str] = None) -> bool:
+    with get_db(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE raw_posts SET status = 'candidate' WHERE post_id = ?", (post_id,))
+        cursor.execute("UPDATE drafts SET review_status = 'pending_review' WHERE post_id = ?", (post_id,))
+        conn.commit()
+    from generate_draft import process_candidates
+    process_candidates(db_path)
+    return True
+
+def reclassify_all_raw_posts(new_threshold: Optional[int] = None, db_path: Optional[str] = None) -> int:
+    if new_threshold is not None:
+        set_setting("SCORE_THRESHOLD", str(new_threshold), db_path)
+    with get_db(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE raw_posts SET status = 'pending'
+            WHERE post_id NOT IN (SELECT post_id FROM drafts WHERE review_status = 'approved')
+        """)
+        conn.commit()
+    from classifier import classify_pending_posts
+    from generate_draft import process_candidates
+    classified = classify_pending_posts(db_path)
+    process_candidates(db_path)
+    return classified
