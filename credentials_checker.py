@@ -50,10 +50,39 @@ def validate_ai_credentials(api_key: str, model: str = "claude-3-5-sonnet-202410
     if not api_key:
         return {"valid": False, "message": "API Key AI belum diisi (mode fallback offline aktif)."}
 
-    model = model.strip() or "claude-3-5-sonnet-20241022"
+    model = model.strip() or "gemini-1.5-flash"
     base_url = base_url.strip()
 
-    # Deteksi provider berdasarkan format token atau URL
+    # Deteksi Google Gemini
+    is_gemini = (api_key.startswith("AIzaSy") or "gemini" in model.lower()) and not base_url
+
+    if is_gemini:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+        try:
+            resp = requests.get(url, timeout=8)
+            if resp.status_code == 200:
+                return {
+                    "valid": True,
+                    "provider": "Google Gemini",
+                    "model": model,
+                    "message": f"Koneksi Google Gemini berhasil! API Key valid dan model '{model}' siap digunakan."
+                }
+            else:
+                try:
+                    err_msg = resp.json().get("error", {}).get("message", resp.text)
+                except Exception:
+                    err_msg = resp.text
+                return {
+                    "valid": False,
+                    "provider": "Google Gemini",
+                    "message": f"Autentikasi Google Gemini gagal (HTTP {resp.status_code}): {err_msg}"
+                }
+        except requests.exceptions.Timeout:
+            return {"valid": False, "message": "Waktu permintaan ke Google Gemini habis (timeout 8 detik)."}
+        except Exception as e:
+            return {"valid": False, "message": f"Gagal menghubungi Google Gemini: {str(e)}"}
+
+    # Deteksi provider Anthropic berdasarkan format token atau nama model
     is_anthropic = (api_key.startswith("sk-ant-") or "claude" in model.lower()) and not base_url
 
     if is_anthropic:

@@ -68,6 +68,33 @@ def call_ai_api(post_text: str) -> Dict[str, Any]:
             "include_bridging": True
         }
 
+    # Dukungan Google Gemini API
+    if "gemini" in model.lower() or api_key.startswith("AIzaSy"):
+        gemini_model = model if "gemini" in model.lower() else "gemini-1.5-flash"
+        url = base_url or f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent?key={api_key}"
+        headers = {
+            "Content-Type": "application/json"
+        }
+        full_prompt = f"{SYSTEM_PROMPT}\n\nPostingan Threads:\n\"{post_text}\""
+        payload = {
+            "contents": [
+                {
+                    "parts": [{"text": full_prompt}]
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.2,
+                "responseMimeType": "application/json"
+            }
+        }
+        res = requests.post(url, headers=headers, json=payload, timeout=25)
+        res.raise_for_status()
+        data = res.json()
+        raw_content = data["candidates"][0]["content"]["parts"][0]["text"]
+        parsed = extract_json_from_text(raw_content)
+        if parsed:
+            return parsed
+
     # Dukungan Anthropic API
     if "claude" in model.lower() or api_key.startswith("sk-ant"):
         url = base_url or "https://api.anthropic.com/v1/messages"

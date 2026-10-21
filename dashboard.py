@@ -305,13 +305,13 @@ with tab_settings:
                 "AI API Key",
                 value=get_ai_api_key(),
                 type="password",
-                help="Kunci API Anthropic / OpenAI / OpenRouter"
+                help="Kunci API Google Gemini (AIzaSy...) / Anthropic (sk-ant-...) / OpenAI (sk-...)"
             )
         with col_a2:
             cfg_ai_model = st.text_input(
                 "Model AI",
                 value=get_ai_model(),
-                help="Contoh: claude-3-5-sonnet-20241022, gpt-4o-mini, dll."
+                help="Contoh: gemini-1.5-flash, gemini-2.0-flash, claude-3-5-sonnet-20241022, gpt-4o-mini"
             )
 
         col_b1, col_b2 = st.columns(2)

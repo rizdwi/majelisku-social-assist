@@ -327,7 +327,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                             <div>
                                 <label class="block text-xs font-semibold text-slate-700 mb-1">AI API Key</label>
                                 <div class="relative">
-                                    <input type="password" id="cfg-ai-key" oninput="onAiInput(this.value)" class="w-full text-sm font-mono p-2.5 pr-10 border border-slate-300 rounded-md bg-white focus:ring-2 focus:ring-emerald-600 focus:outline-none" placeholder="sk-ant-... atau sk-...">
+                                    <input type="password" id="cfg-ai-key" oninput="onAiInput(this.value)" class="w-full text-sm font-mono p-2.5 pr-10 border border-slate-300 rounded-md focus:ring-2 focus:ring-emerald-600 focus:outline-none" placeholder="AIzaSy... (Gemini) atau sk-ant-... (Claude) atau sk-...">
                                     <button type="button" onclick="togglePasswordVisibility('cfg-ai-key')" class="absolute inset-y-0 right-0 px-3 flex items-center text-slate-400 hover:text-slate-600" title="Tampilkan/Sembunyikan">
                                         👁️
                                     </button>
@@ -339,6 +339,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                                 <label class="block text-xs font-semibold text-slate-700 mb-1">Model AI</label>
                                 <div class="space-y-2">
                                     <select id="cfg-ai-model-select" onchange="handleModelSelectChange()" class="w-full text-sm p-2.5 border border-slate-300 rounded-md bg-white focus:ring-2 focus:ring-emerald-600 focus:outline-none">
+                                        <option value="gemini-1.5-flash">Google Gemini 1.5 Flash (gemini-1.5-flash - Rekomendasi Cepat & Hemat)</option>
+                                        <option value="gemini-2.0-flash">Google Gemini 2.0 Flash (gemini-2.0-flash)</option>
+                                        <option value="gemini-1.5-pro">Google Gemini 1.5 Pro (gemini-1.5-pro)</option>
                                         <option value="claude-3-5-sonnet-20241022">Claude 3.5 Sonnet (claude-3-5-sonnet-20241022)</option>
                                         <option value="claude-3-haiku-20240307">Claude 3 Haiku (claude-3-haiku-20240307)</option>
                                         <option value="gpt-4o-mini">OpenAI GPT-4o Mini (gpt-4o-mini)</option>
@@ -493,7 +496,17 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             }
 
             badge.classList.remove('hidden');
-            if (trimmed.startsWith('sk-ant-')) {
+            if (trimmed.startsWith('AIzaSy') || trimmed.startsWith('AIza')) {
+                badge.className = 'text-xs font-semibold px-2 py-0.5 rounded bg-blue-100 text-blue-800 border border-blue-200';
+                badge.innerText = 'Format: Google Gemini Key';
+                hint.innerText = 'Format API Key Google Gemini terdeteksi valid.';
+                hint.className = 'text-xs text-blue-700 mt-1 font-medium';
+
+                const sel = document.getElementById('cfg-ai-model-select');
+                if (sel && (sel.value.includes('claude') || sel.value.includes('gpt'))) {
+                    sel.value = 'gemini-1.5-flash';
+                }
+            } else if (trimmed.startsWith('sk-ant-')) {
                 badge.className = 'text-xs font-semibold px-2 py-0.5 rounded bg-purple-100 text-purple-800 border border-purple-200';
                 badge.innerText = 'Format: Anthropic Claude Key';
                 hint.innerText = 'Format API Key Anthropic terdeteksi valid.';
